@@ -232,7 +232,7 @@ export async function createCliBridge(
         }));
     },
     async pick() {
-      throw new Error('Asset picker not available in CLI mode — list ids with `brand-tool assets [query]` and pass one to the asset input (e.g. --logo=suse/logo/hor-pos-green)');
+      throw new Error('Asset picker not available in CLI mode — list ids with `lolly assets [query]` and pass one to the asset input (e.g. --logo=suse/logo/hor-pos-green)');
     },
     async isAvailable(id) {
       return assetById.has(parseThemedAssetId(id).baseId);

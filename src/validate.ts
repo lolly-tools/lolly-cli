@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * `brand-tool validate <file> [--json] [--trust-anchor=<root.pem>]` —
+ * `lolly validate <file> [--json] [--trust-anchor=<root.pem>]` —
  * on-device Content Credentials check for any stampable container (pdf,
  * png/apng, jpg, gif, svg, tiff, webp, mp4, webm).
  *

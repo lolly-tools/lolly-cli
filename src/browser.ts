@@ -6,7 +6,7 @@
  * PNG fast path via resvg (see raster.ts). This module is the opt-in "Tier B" for the
  * formats only a real browser can make — HTML-layout raster, jpg/webp, pdf, video.
  *
- * The browser is NOT bundled: `brand-tool install-browser` downloads Chromium once
+ * The browser is NOT bundled: `lolly install-browser` downloads Chromium once
  * (via the `playwright-core` we already depend on — a plain `npm install` pulls no
  * browser). It is loaded lazily on first use and killed on process exit — never at
  * startup — so a `--export=svg` run stays instant and dependency-light.
@@ -26,7 +26,7 @@ import { existsSync } from 'node:fs';
 
 // shells/cli/src → repo root is three levels up.
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-/** Where `brand-tool install-browser` puts Chromium — a package-neutral repo-root dir. */
+/** Where `lolly install-browser` puts Chromium — a package-neutral repo-root dir. */
 export const INSTALL_BROWSERS_DIR = join(REPO_ROOT, '.browsers');
 // A Chromium another repo package already downloaded — reused read-only when the CLI's
 // own dir is empty, so a machine already set up for the other render tiers needs no
@@ -69,7 +69,7 @@ export async function getBrowser(): Promise<import('playwright-core').Browser> {
         const msg = (err as Error).message || '';
         if (/executable doesn't exist|Executable doesn't exist|please run|not been downloaded/i.test(msg)) {
           throw new BrowserError(
-            'Raster/PDF/video export needs a headless browser. Run `brand-tool install-browser` ' +
+            'Raster/PDF/video export needs a headless browser. Run `lolly install-browser` ' +
             '(downloads Chromium once, ~150 MB), or set LOLLY_BROWSER_CHANNEL=chrome to use an ' +
             'already-installed Chrome/Edge with no download. (svg and data formats need no browser.)',
           );

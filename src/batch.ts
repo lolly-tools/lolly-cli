@@ -31,7 +31,7 @@ export async function batchTemplateCli(toolIds: string[]): Promise<void> {
       tools.push({ id: t.manifest.id, inputs: (t.manifest.inputs ?? []).map(i => ({ id: i.id })) });
     } catch { process.stderr.write(`Warning: unknown tool "${id}" — skipped.\n`); }
   }
-  if (!tools.length) throw new Error('No known tools given. Usage: brand-tool batch --template=qr-code,chart-creator');
+  if (!tools.length) throw new Error('No known tools given. Usage: lolly batch --template=qr-code,chart-creator');
   process.stdout.write(batchCsvTemplate(tools));
 }
 

@@ -54,7 +54,7 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
 
   // Expand a packed `z=…` param back into a plain query first — the CLI is URL mode
   // under a different transport, so a packed share link must run identically here
-  // (`brand-tool layout-studio --z=1eJ…`). A no-op for ordinary readable params.
+  // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(new URLSearchParams(params).toString());
   const { values, format: paramFormat, width, height, unit, dpi, password, c2pa } = parseUrlState(
     query,
@@ -302,7 +302,7 @@ export async function listAssetsCli(query?: string, opts: { type?: string } = {}
     process.stdout.write(`  ${a.id.padEnd(width)}  ${`(${a.type})`.padEnd(10)} ${a.name ?? ''}\n`);
   }
   process.stdout.write(
-    `\nUse any id as an asset input, e.g.  brand-tool asset-export --src=${matches[0]?.id ?? '<id>'} --export=png\n`,
+    `\nUse any id as an asset input, e.g.  lolly asset-export --src=${matches[0]?.id ?? '<id>'} --export=png\n`,
   );
 }
 
@@ -324,14 +324,14 @@ export async function showToolInputsCli(toolId: string): Promise<void> {
     const hint = syntaxHint(i.id, i.type);
     if (hint) process.stdout.write(`      ↳ ${hint}\n`);
   }
-  process.stdout.write(`\nUsage:\n  brand-tool ${tool.manifest.id} --some-input=value --output=file.${tool.manifest.render.formats[0]}\n`);
+  process.stdout.write(`\nUsage:\n  lolly ${tool.manifest.id} --some-input=value --output=file.${tool.manifest.render.formats[0]}\n`);
 }
 
 /** URL-mode syntax hint for the non-scalar input types, so the CLI's `<tool>` help
  *  explains how to actually express them (the forms are otherwise undocumented). */
 function syntaxHint(id: string, type: string): string {
   switch (type) {
-    case 'asset':   return 'a catalog id (see `brand-tool assets`) or a lolly.tools tool URL';
+    case 'asset':   return 'a catalog id (see `lolly assets`) or a lolly.tools tool URL';
     case 'blocks':  return `a JSON array --${id}='[{…}]', or tilde rows --${id}='label,val,#hex~label2,val2'`;
     case 'vector':  return `one flag per field, e.g. --${id}.<field>=<number>`;
     case 'file':    return 'a path to your file (read locally, never uploaded)';

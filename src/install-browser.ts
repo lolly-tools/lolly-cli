@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * `brand-tool install-browser` — download Chromium for the CLI's Tier-B render path
+ * `lolly install-browser` — download Chromium for the CLI's Tier-B render path
  * (HTML-layout raster, jpg/webp, pdf, video). This is the ONE explicit step that pulls
  * a browser: it drives the `playwright-core` we already depend on — NOT the full
  * `playwright` package — so a plain `npm install` never downloads one.
  *
- *   brand-tool install-browser                 # Chromium → <repo>/.browsers
- *   brand-tool install-browser --with-deps      # + OS system deps (Linux containers)
- *   brand-tool install-browser --force          # reinstall
+ *   lolly install-browser                 # Chromium → <repo>/.browsers
+ *   lolly install-browser --with-deps      # + OS system deps (Linux containers)
+ *   lolly install-browser --force          # reinstall
  *
  * The install target is the CLI's own scoped dir (INSTALL_BROWSERS_DIR); an explicit
  * PLAYWRIGHT_BROWSERS_PATH in the environment overrides it. No download is needed at

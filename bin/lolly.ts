@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MPL-2.0
 /**
- * brand-tool CLI
+ * lolly CLI
  *
  * Usage:
- *   brand-tool                                    # list tools
- *   brand-tool <tool-id>                          # show inputs for a tool
- *   brand-tool <tool-id> --foo=bar                # run, write to stdout
- *   brand-tool <tool-id> --foo=bar --output=f.svg # run, write to file
- *   brand-tool <tool-id> --foo=bar --export=svg   # explicit format
- *   brand-tool <tool-id> --foo=bar --c2pa=30      # stamp Content Credentials
+ *   lolly                                    # list tools
+ *   lolly <tool-id>                          # show inputs for a tool
+ *   lolly <tool-id> --foo=bar                # run, write to stdout
+ *   lolly <tool-id> --foo=bar --output=f.svg # run, write to file
+ *   lolly <tool-id> --foo=bar --export=svg   # explicit format
+ *   lolly <tool-id> --foo=bar --c2pa=30      # stamp Content Credentials
  *                                                 # (7|30|90|365-day ephemeral cert; =off forces off)
- *   brand-tool <tool-id> --export=png             # raster: no browser for SVG-native tools
- *   brand-tool install-browser                    # one-time Chromium download for png/jpg/pdf/video
+ *   lolly <tool-id> --export=png             # raster: no browser for SVG-native tools
+ *   lolly install-browser                    # one-time Chromium download for png/jpg/pdf/video
  *                                                 # of HTML-layout tools (Tier B); needs `npm run build:web`
- *   brand-tool validate <file> [--json] [--trust-anchor=<root.pem>]  # check Content Credentials
+ *   lolly validate <file> [--json] [--trust-anchor=<root.pem>]  # check Content Credentials
  *
  * Architectural note: this CLI is URL mode under a different transport.
  * --foo=bar argv pairs become the same input values the web shell would
@@ -38,7 +38,7 @@ try {
   // Credentials verification via the same engine module as the web /valid view.
   if (args[0] === 'validate') {
     const file = args.find((a, i) => i > 0 && !a.startsWith('--'));
-    if (!file) throw new Error('usage: brand-tool validate <file> [--json] [--trust-anchor=<root.pem>]');
+    if (!file) throw new Error('usage: lolly validate <file> [--json] [--trust-anchor=<root.pem>]');
     const { validateCli } = await import('../src/validate.ts');
     exit(await validateCli(file, { json: 'json' in parseArgs(args.slice(1)) }));
   }
@@ -53,7 +53,7 @@ try {
 
   // `assets` is a reserved subcommand: list catalog asset ids so they can be passed to
   // any `asset`-type input (the engine already resolves an id → the embedded asset).
-  // `brand-tool assets [query] [--type=raster]`.
+  // `lolly assets [query] [--type=raster]`.
   if (args[0] === 'assets') {
     const flags = parseArgs(args.slice(1));
     const query = args.find((a, i) => i > 0 && !a.startsWith('--'));
@@ -63,7 +63,7 @@ try {
 
   // `batch` is a reserved subcommand: render many rows from a CSV/TSV, one output file
   // per row into a directory. `--template=tool,tool` prints a starter grid instead.
-  // `brand-tool batch <rows.csv> [--out-dir=./out] [--keep-going]`.
+  // `lolly batch <rows.csv> [--out-dir=./out] [--keep-going]`.
   if (args[0] === 'batch') {
     const flags = parseArgs(args.slice(1));
     if (flags.template !== undefined) {
@@ -72,7 +72,7 @@ try {
       exit(0);
     }
     const csv = args.find((a, i) => i > 0 && !a.startsWith('--'));
-    if (!csv) throw new Error('usage: brand-tool batch <rows.csv> [--out-dir=./out] [--keep-going]   (or --template=tool,tool)');
+    if (!csv) throw new Error('usage: lolly batch <rows.csv> [--out-dir=./out] [--keep-going]   (or --template=tool,tool)');
     const { runBatchCli } = await import('../src/batch.ts');
     exit(await runBatchCli(csv, { outDir: flags['out-dir'] || './out', keepGoing: 'keep-going' in flags }));
   }
