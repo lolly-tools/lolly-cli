@@ -18,7 +18,7 @@ import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, summari
 // else — raster, pdf, video — is produced by raster.ts (resvg fast path, else the scoped
 // Chromium). Kept in sync with shells/tui/src/engine-render.ts NODE_FORMATS.
 const NODE_FORMATS = ['svg', 'emf', 'eps', 'eps-cmyk', 'html', 'json', 'csv', 'ics', 'vcf', 'txt', 'md'];
-import { createCliBridge } from './bridge.ts';
+import { createCliBridge, applyBrandVars } from './bridge.ts';
 import type { Profile, ExportOpts } from '../../../engine/src/bridge/host-v1.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -123,8 +123,12 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
 
   const runtime = await createRuntime(tool, host, values);
 
-  // Set up the rendering DOM.
+  // Set up the rendering DOM. Brand vars go on first: the catalog's semantic
+  // colour slots (--primary, --surface, …) land on the canvas root BEFORE
+  // hydration, so a template's var(--primary, fallback) reads the same brand
+  // via web, URL mode, and CLI (plans/brand-token-contract.md §7).
   const canvas = dom.window.document.getElementById('canvas')!;
+  await applyBrandVars(canvas, host);
   canvas.innerHTML = runtime.getHydrated();
 
   // Pass through requested output dimensions. A physical unit (mm/cm/in/pt)

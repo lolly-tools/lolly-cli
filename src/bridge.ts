@@ -14,10 +14,10 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, RESERVED, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, RESERVED, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
-  StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat,
+  StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
 } from '../../../engine/src/bridge/host-v1.ts';
 // PDF metadata inspect/strip is pure pdf-lib (no DOM), so the lean node CLI
 // shares the web shell's implementation rather than duplicating it.
@@ -142,6 +142,34 @@ export async function createCliBridge(
     })().catch(() => []); // unavailable ≠ broken: photos just stay untreated
     return photoTreatmentsCache;
   }
+
+  // Design tokens — the catalog's FIRST `type:'tokens'` asset (the same
+  // brand-agnostic discovery rule as the web bridge and the MCP tokens
+  // resource), read from disk and resolved by the engine per theme. Missing or
+  // unreadable → an empty set: token-bound colour inputs fall back to their
+  // cached hex and the semantic brand vars (applyBrandVars below) stay unset.
+  let tokensDocCache: Promise<unknown> | null = null;
+  function tokensDoc(): Promise<unknown> {
+    tokensDocCache ??= (async () => {
+      const asset = assetIndex.assets.find(a => a.type === 'tokens');
+      if (!asset) return null;
+      return JSON.parse(await readFile(join(REPO_ROOT, asset.formats[0]!.url.replace(/^\//, '')), 'utf8'));
+    })().catch(() => null); // unavailable ≠ broken: everything token-y just degrades
+    return tokensDocCache;
+  }
+  const tokenSets = new Map<string, TokenSet>(); // theme key ('' = default) → resolved set
+  async function tokenSet(theme?: string): Promise<TokenSet> {
+    const key = theme ?? '';
+    let set = tokenSets.get(key);
+    if (!set) { set = createTokenSet(await tokensDoc(), { theme }); tokenSets.set(key, set); }
+    return set;
+  }
+  host.tokens = {
+    get: (opts = {}) => tokenSet(opts.theme),
+    colors: async (opts = {}) => (await tokenSet(opts.theme)).colors(),
+    resolve: async (ref, opts = {}) => (await tokenSet(opts.theme)).resolve(ref),
+    themes: async () => (await tokenSet()).themes(),
+  };
 
   host.assets = {
     async get(id) {
@@ -423,6 +451,33 @@ export async function createCliBridge(
   };
 
   return host;
+}
+
+// The seven semantic colour slots → CSS custom properties on the canvas root
+// (plans/brand-token-contract.md §3). Reserved --font-brand/--font-text are NOT
+// set yet (font rung is a later pass).
+const BRAND_VAR_SLOTS = ['primary', 'on-primary', 'secondary', 'surface', 'text', 'muted', 'edge'] as const;
+
+/**
+ * Resolve the active brand's semantic colour slots (`color.semantic.*`) via
+ * host.tokens and set them as CSS custom properties (`--primary`, `--surface`,
+ * …) on the element the tool template hydrates into — the CLI half of the web
+ * shell's applyBrandVars, so a semantic-var template renders identically via
+ * web, URL mode, and CLI. TokenSet.resolve takes the alias form ({path}) and
+ * bare dotted paths under the same rule, so one call covers both. A missing
+ * tokens asset or an unresolvable slot sets nothing (never ''), leaving the
+ * template's own fallbacks (`var(--primary, #4f83cc)`) in charge.
+ */
+export async function applyBrandVars(el: HTMLElement, host: HostV1): Promise<void> {
+  if (!host.tokens) return;
+  for (const slot of BRAND_VAR_SLOTS) {
+    let value: unknown;
+    try { value = await host.tokens.resolve(`{color.semantic.${slot}}`); } catch { continue; }
+    // A string passes through as resolved (oklch()/hex are both valid CSS);
+    // any structured DTCG colour form is normalised to hex by the engine.
+    const css = typeof value === 'string' && value ? value : colorToHex(value);
+    if (css) el.style.setProperty(`--${slot}`, css);
+  }
 }
 
 // Embed authorship provenance as <title>/<desc> + a Dublin-Core <metadata> block
