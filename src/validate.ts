@@ -22,7 +22,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { verifyC2pa, pemToDer } from '@lolly/engine';
+import { verifyC2pa, pemToDer, c2paTrustAnchors } from '@lolly/engine';
 
 const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', YELLOW = '\x1b[33m', RESET = '\x1b[0m';
 const tty = process.stdout.isTTY;
@@ -43,10 +43,13 @@ export async function validateCli(
   // instead (opts.trustAnchors — PEM file paths — overrides, for tests).
   const anchorPaths = trustAnchors
     ?? process.argv.map((a) => /^--trust-anchor=(.+)$/.exec(a)?.[1]).filter((x): x is string => Boolean(x));
-  const anchors: Uint8Array[] = [];
+  // The vendored C2PA trust list (Google/Gemini, camera makers, …) plus any
+  // --trust-anchor=<root.pem> the caller pins, so recognised signers read as
+  // trusted here exactly as they do in the web /valid view.
+  const anchors: Uint8Array[] = [...c2paTrustAnchors()];
   for (const p of anchorPaths) anchors.push(pemToDer(await readFile(p, 'utf8')));
   const bytes = new Uint8Array(await readFile(filePath));
-  const report = await verifyC2pa(bytes, anchors.length ? { trustAnchors: anchors } : {});
+  const report = await verifyC2pa(bytes, { trustAnchors: anchors });
 
   if (json) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
