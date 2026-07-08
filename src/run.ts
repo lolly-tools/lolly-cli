@@ -12,7 +12,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join, dirname, resolve, basename, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, C2PA_FORMATS, ENGINE_VERSION } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, summarizeInputs, C2PA_FORMATS, ENGINE_VERSION } from '@lolly/engine';
 
 // Formats the DOM-free engine writes on its own (svg/emf/eps + text/data). Everything
 // else — raster, pdf, video — is produced by raster.ts (resvg fast path, else the scoped
@@ -170,11 +170,25 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
     } else {
       try {
         const days = c2pa.days ?? 30;
+        // The "what was this made from / where / when / how big" record, matching
+        // the web shell's tools.lolly.export enrichment: export context + date +
+        // output size + the scalar-input digest, so a CLI-made asset inspects as
+        // richly as a browser-made one.
+        const inputs = summarizeInputs(runtime.getModel());
+        const sizeLine = (typeof width === 'number' && width > 0 && typeof height === 'number' && height > 0)
+          ? (u !== 'px' ? `${width} × ${height} ${u} @ ${dpi || 300} DPI` : `${width} × ${height} px`)
+          : undefined;
         const stamped = await embedC2pa(new Uint8Array(buf), targetFormat, {
           title: tool.manifest.name,
           claimGenerator: 'Lolly lolly.tools',
           generatorInfo: { name: 'Lolly', version: ENGINE_VERSION },
-          environment: { surface: 'cli', engine: 'node', os: process.platform, format: targetFormat, tool: toolId },
+          environment: {
+            surface: 'cli', engine: `node ${process.version}`, os: process.platform,
+            format: targetFormat, tool: tool.manifest.name || toolId,
+            date: new Date().toISOString(),
+            ...(sizeLine ? { dimensions: sizeLine } : {}),
+            ...(Object.keys(inputs).length ? { inputs } : {}),
+          },
           ...(profile.useDetails === true && profile.firstname
             ? { author: { name: [profile.firstname, profile.lastname].filter(Boolean).join(' '), ...(profile.email ? { email: profile.email } : {}) } }
             : {}),
