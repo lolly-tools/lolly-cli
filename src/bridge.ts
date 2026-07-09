@@ -14,7 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, RESERVED, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, RESERVED, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -398,6 +398,12 @@ export async function createCliBridge(
       const childRuntime = await createRuntime(childTool, host, inputs as Parameters<typeof createRuntime>[2], { composeStack: _stack });
       const el = w.document.createElement('div');
       el.innerHTML = childRuntime.getHydrated();
+      // Compose children get the same brand vars as the top-level canvas
+      // (plans/brand-token-contract.md §3 injection rules). For html-format
+      // children the wrapper div (with its inline vars) is what's serialised;
+      // the svg serialiser excludes the wrapper root, so standalone svg
+      // children still rely on their var() fallbacks (accepted class).
+      await applyBrandVars(el, host);
       const fmt = format ?? childTool.manifest.render.formats[0]!;
       // Honour requested dimensions — host.export (CLI svg) parses a unit-qualified
       // width/height via parseDimension; px passes through as a number.
@@ -453,30 +459,36 @@ export async function createCliBridge(
   return host;
 }
 
-// The seven semantic colour slots → CSS custom properties on the canvas root
-// (plans/brand-token-contract.md §3). Reserved --font-brand/--font-text are NOT
-// set yet (font rung is a later pass).
+// The seven semantic colour slots → namespaced CSS custom properties on the
+// canvas root (plans/brand-token-contract.md §3): `--brand-primary` …
+// `--brand-edge`. Reserved --brand-font/--brand-font-text are NOT set yet
+// (font rung is a later pass).
 const BRAND_VAR_SLOTS = ['primary', 'on-primary', 'secondary', 'surface', 'text', 'muted', 'edge'] as const;
 
 /**
  * Resolve the active brand's semantic colour slots (`color.semantic.*`) via
- * host.tokens and set them as CSS custom properties (`--primary`, `--surface`,
- * …) on the element the tool template hydrates into — the CLI half of the web
- * shell's applyBrandVars, so a semantic-var template renders identically via
- * web, URL mode, and CLI. TokenSet.resolve takes the alias form ({path}) and
- * bare dotted paths under the same rule, so one call covers both. A missing
- * tokens asset or an unresolvable slot sets nothing (never ''), leaving the
- * template's own fallbacks (`var(--primary, #4f83cc)`) in charge.
+ * host.tokens and set them as CSS custom properties (`--brand-primary`,
+ * `--brand-surface`, …) on the element the tool template hydrates into — the
+ * CLI half of the web shell's applyBrandVars, so a semantic-var template
+ * renders identically via web, URL mode, and CLI. TokenSet.resolve takes the
+ * alias form ({path}) and bare dotted paths under the same rule, so one call
+ * covers both. A missing tokens asset or an unresolvable slot sets nothing
+ * (never ''), leaving the template's own fallbacks
+ * (`var(--brand-primary, #4f83cc)`) in charge.
  */
 export async function applyBrandVars(el: HTMLElement, host: HostV1): Promise<void> {
   if (!host.tokens) return;
   for (const slot of BRAND_VAR_SLOTS) {
     let value: unknown;
     try { value = await host.tokens.resolve(`{color.semantic.${slot}}`); } catch { continue; }
-    // A string passes through as resolved (oklch()/hex are both valid CSS);
-    // any structured DTCG colour form is normalised to hex by the engine.
-    const css = typeof value === 'string' && value ? value : colorToHex(value);
-    if (css) el.style.setProperty(`--${slot}`, css);
+    // A string passes through as resolved (oklch()/hex are both valid CSS) —
+    // unless it is alias residue: a `{path}` that never resolved is a missing
+    // slot, not a colour (contract §3), so it sets nothing. Any structured
+    // DTCG colour form is normalised to hex by the engine.
+    const css = typeof value === 'string' && value
+      ? (isAlias(value) ? null : value)
+      : colorToHex(value);
+    if (css) el.style.setProperty(`--brand-${slot}`, css);
   }
 }
 
