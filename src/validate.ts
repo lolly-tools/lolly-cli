@@ -60,6 +60,8 @@ export async function validateCli(
       ? paint(GREEN, '✦ Made with Lolly') + paint(DIM, ' — credential intact, file unchanged since export')
       : report.delivered && report.trusted
         ? paint(GREEN, '◆ Delivered by Lolly') + paint(DIM, ' — verified authentic official asset; delivered by Lolly, not created by it')
+      : report.likelyMadeWithLolly
+        ? paint(YELLOW, '~ Likely made with Lolly') + paint(DIM, ' — the credential\'s own content checks out and records a Lolly export, but this file\'s bytes no longer match it')
       : expiredOnly
         ? paint(YELLOW, '! Credential expired') + paint(DIM, ' — the file still matches what was signed; the one-year on-device certificate has lapsed')
         : {
