@@ -12,7 +12,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join, dirname, resolve, basename, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, summarizeInputs, C2PA_FORMATS, ENGINE_VERSION } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, summarizeInputs, C2PA_FORMATS, ENGINE_VERSION, normalizeLang } from '@lolly/engine';
+import type { Lang } from '@lolly/engine';
 
 // Formats the DOM-free engine writes on its own (svg/emf/eps + text/data). Everything
 // else — raster, pdf, video — is produced by raster.ts (resvg fast path, else the scoped
@@ -44,7 +45,12 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
     return readFile(full, 'utf8');
   };
 
-  const tool = await loadToolOrThrow(toolId, fetchFile);
+  // --lang=xx selects the tool's manifest translation sidecar, if it ships one
+  // (engine/src/loader.ts's applyManifestI18n) — the CLI is URL mode under a
+  // different transport, so this is the same `lang` reserved param, read
+  // directly rather than through parseUrlState (which treats it as reserved
+  // and never surfaces it in `values`).
+  const tool = await loadToolOrThrow(toolId, fetchFile, { lang: normalizeLang(params.lang) ?? undefined });
 
   // --profile=path.json pre-fills bindToProfile inputs from the user's profile
   // (the bridge serves it via host.profile.get). A missing/invalid file warns
@@ -230,9 +236,9 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
 // --keep-going, and still print its summary, while the single-run path's top-level
 // catch prints the same message and exits 1 as before. The substituted message hides
 // the internal absolute path + errno the raw readFile ENOENT would leak.
-async function loadToolOrThrow(toolId: string, fetchFile: (path: string) => Promise<string>) {
+async function loadToolOrThrow(toolId: string, fetchFile: (path: string) => Promise<string>, opts: { lang?: Lang } = {}) {
   try {
-    return await loadTool(toolId, fetchFile);
+    return await loadTool(toolId, fetchFile, opts);
   } catch (e) {
     if ((e as { code?: string })?.code === 'ENOENT') {
       throw new Error(`Tool not found: ${toolId}. Run with no args to list tools.`);
@@ -324,12 +330,12 @@ export async function listAssetsCli(query?: string, opts: { type?: string } = {}
   );
 }
 
-export async function showToolInputsCli(toolId: string): Promise<void> {
+export async function showToolInputsCli(toolId: string, opts: { lang?: Lang } = {}): Promise<void> {
   const fetchFile = async (path: string): Promise<string> => {
     const full = join(REPO_ROOT, 'tools', path);
     return readFile(full, 'utf8');
   };
-  const tool = await loadToolOrThrow(toolId, fetchFile);
+  const tool = await loadToolOrThrow(toolId, fetchFile, opts);
   process.stdout.write(`${tool.manifest.name} (${tool.manifest.id} v${tool.manifest.version})\n`);
   process.stdout.write(`Status: ${tool.manifest.status}\n`);
   process.stdout.write(`Formats: ${tool.manifest.render.formats.join(', ')}\n\n`);

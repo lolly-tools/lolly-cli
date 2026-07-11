@@ -23,7 +23,7 @@
  */
 
 import { argv, exit } from 'node:process';
-import { parseToolUrl } from '@lolly/engine';
+import { parseToolUrl, normalizeLang } from '@lolly/engine';
 import { runToolCli, listToolsCli, showToolInputsCli, listAssetsCli } from '../src/run.ts';
 
 const args = argv.slice(2);
@@ -94,9 +94,12 @@ try {
   const toolId = args[0]!;
   const flags = parseArgs(args.slice(1));
 
-  // No flags → show the tool's input schema
-  if (Object.keys(flags).length === 0) {
-    await showToolInputsCli(toolId);
+  // No flags (or only --lang) → show the tool's input schema. `lang` is
+  // reserved (see engine/src/url-mode.ts), never a tool input, so it doesn't
+  // count as "a flag was given" for the show-inputs-vs-render branch.
+  const flagKeys = Object.keys(flags).filter(k => k !== 'lang');
+  if (flagKeys.length === 0) {
+    await showToolInputsCli(toolId, { lang: normalizeLang(flags.lang as string | undefined) ?? undefined });
     exit(0);
   }
 
