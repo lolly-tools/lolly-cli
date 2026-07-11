@@ -14,7 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, RESERVED, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, RESERVED, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -170,6 +170,10 @@ export async function createCliBridge(
     resolve: async (ref, opts = {}) => (await tokenSet(opts.theme)).resolve(ref),
     themes: async () => (await tokenSet()).themes(),
   };
+
+  // Perceptual colour tools (v1.40) — pure engine math, attached verbatim
+  // (same object the web bridge attaches, so shells can never drift).
+  host.color = makeColorApi();
 
   host.assets = {
     async get(id) {
