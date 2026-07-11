@@ -14,7 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, RESERVED, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -393,9 +393,7 @@ export async function createCliBridge(
     async render(spec) {
       const { toolId, inputs = {}, format, width, height, unit, dpi, _stack = [] } = (spec ?? {}) as ComposeSpec;
       if (typeof toolId !== 'string' || !toolId) throw new Error('compose: missing toolId');
-      const path = [..._stack, toolId];
-      if (_stack.includes(toolId)) throw new Error(`cycle ${path.join(' → ')}`);
-      if (_stack.length >= 3) throw new Error(`max compose depth (${path.join(' → ')})`);
+      assertComposeStack(_stack, toolId); // engine-owned cycle/depth policy, shared with every shell
       const childTool = await loadTool(toolId, composeFetchFile);
       // Pass the ANCESTOR stack (_stack), not `path`: createRuntime re-appends the
       // child's id, so `path` would double-count and hit the depth guard early.
@@ -433,7 +431,12 @@ export async function createCliBridge(
       if (!parsed) return null;
       let childTool!: Awaited<ReturnType<typeof loadTool>>;
       try { childTool = await loadTool(parsed.toolId, composeFetchFile); } catch { return null; }
-      const st = parseUrlState(parsed.query, childTool.manifest);
+      // A pasted link may carry packed state (`?z=…`); expand before parsing. The
+      // embed id below is minted from the EXPANDED query too — the packed query's
+      // only param is the reserved `z`, which gets stripped, so a packed link would
+      // otherwise render (and persist) as all defaults. Same as the web bridge.
+      const query = await expandQuery(parsed.query);
+      const st = parseUrlState(query, childTool.manifest);
       const supported = (childTool.manifest.render?.formats ?? []).map(f => String(f).toLowerCase());
       const norm = (f: string | null | undefined) => { const x = String(f || '').toLowerCase(); return x === 'jpeg' ? 'jpg' : x; };
       const format = norm(opts.format) || norm(parsed.format)
@@ -450,13 +453,22 @@ export async function createCliBridge(
         });
       } catch { return null; }
       if (!ref) return null;
-      const q = new URLSearchParams(parsed.query);
+      const q = new URLSearchParams(query);
       for (const k of RESERVED) q.delete(k);
       if (width) q.set('w', String(width));
       if (height) q.set('h', String(height));
       if (unit && unit !== 'px') { q.set('unit', String(unit)); if (dpi) q.set('dpi', String(dpi)); }
       const id = buildEmbedUrl({ toolId: parsed.toolId, format, query: q.toString() });
-      return { ...ref, id: id ?? ref.id };
+      // No re-parseable identity (too long) → don't persist a dead slot: a
+      // `compose:<toolId>` id can't re-resolve on load (same stance as the web
+      // bridge). meta.toolUrl carries the canonical id — it is what drives the
+      // live-edit UI and what baking records as provenance (meta.bakedFrom).
+      if (!id) return null;
+      return {
+        ...ref,
+        id,
+        meta: { ...(ref.meta || {}), tool: parsed.toolId, name: childTool.manifest.name ?? parsed.toolId, toolUrl: id },
+      };
     },
   };
 
