@@ -11,12 +11,12 @@
  * same rows, a different idiomatic output per surface.)
  */
 import { readFile, mkdir } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import { parseBatchCsv, batchCsvTemplate, loadTool } from '@lolly/engine';
+import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 import { runToolCli } from './run.ts';
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const REPO_ROOT = repoRoot();
 const fetchFile = (p: string): Promise<string> => readFile(join(REPO_ROOT, 'tools', p), 'utf8');
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'out';
 

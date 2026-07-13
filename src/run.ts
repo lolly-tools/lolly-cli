@@ -9,20 +9,20 @@
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
-import { join, dirname, resolve, basename, extname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, summarizeInputs, C2PA_FORMATS, ENGINE_VERSION, normalizeLang } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang } from '@lolly/engine';
 import type { Lang } from '@lolly/engine';
-
-// Formats the DOM-free engine writes on its own (svg/emf/eps + text/data). Everything
-// else — raster, pdf, video — is produced by raster.ts (resvg fast path, else the scoped
-// Chromium). Kept in sync with shells/tui/src/engine-render.ts NODE_FORMATS.
-const NODE_FORMATS = ['svg', 'emf', 'eps', 'eps-cmyk', 'html', 'json', 'csv', 'ics', 'vcf', 'txt', 'md'];
+// NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
+// in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
+// scoped Chromium).
+import { NODE_FORMATS } from '@lolly-tools/node-shell/raster';
+import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
+import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 import { createCliBridge, applyBrandVars } from './bridge.ts';
 import type { Profile, ExportOpts } from '../../../engine/src/bridge/host-v1.ts';
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const REPO_ROOT = repoRoot();
 
 interface RunToolCliArgs {
   toolId: string;
@@ -179,31 +179,13 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
       process.stderr.write('Warning: password-locked export — skipping Content Credentials (an encrypted document cannot take the C2PA update).\n');
     } else {
       try {
-        const days = c2pa.days ?? 30;
         // The "what was this made from / where / when / how big" record, matching
-        // the web shell's tools.lolly.export enrichment: export context + date +
-        // output size + the scalar-input digest, so a CLI-made asset inspects as
-        // richly as a browser-made one.
-        const inputs = summarizeInputs(runtime.getModel());
-        const sizeLine = (typeof width === 'number' && width > 0 && typeof height === 'number' && height > 0)
-          ? (u !== 'px' ? `${width} × ${height} ${u} @ ${dpi || 300} DPI` : `${width} × ${height} px`)
-          : undefined;
-        const stamped = await embedC2pa(new Uint8Array(buf), targetFormat, {
-          title: tool.manifest.name,
-          claimGenerator: 'Lolly lolly.tools',
-          generatorInfo: { name: 'Lolly', version: ENGINE_VERSION },
-          environment: {
-            surface: 'cli', engine: `node ${process.version}`, os: process.platform,
-            format: targetFormat, tool: tool.manifest.name || toolId,
-            date: new Date().toISOString(),
-            ...(sizeLine ? { dimensions: sizeLine } : {}),
-            ...(Object.keys(inputs).length ? { inputs } : {}),
-          },
-          ...(profile.useDetails === true && profile.firstname
-            ? { author: { name: [profile.firstname, profile.lastname].filter(Boolean).join(' '), ...(profile.email ? { email: profile.email } : {}) } }
-            : {}),
-          dates: { notBefore: new Date(Date.now() - 60_000), notAfter: new Date(Date.now() + days * 86_400_000) },
-        });
+        // the web shell's tools.lolly.export enrichment (shared with the TUI —
+        // buildExportC2paOpts also attaches the profile author under `useDetails`).
+        const stamped = await embedC2pa(new Uint8Array(buf), targetFormat, buildExportC2paOpts({
+          surface: 'cli', manifest: tool.manifest, model: runtime.getModel(),
+          format: targetFormat, dims: { width, height, unit, dpi }, days: c2pa.days, profile,
+        }));
         buf = Buffer.from(stamped.buffer as ArrayBuffer, stamped.byteOffset, stamped.byteLength);
       } catch (e) {
         process.stderr.write(`Warning: Content Credentials not attached — ${(e as Error).message}\n`);
@@ -225,7 +207,7 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
   // this keeps a programmatic caller from leaking a browser + open port).
   if (usedBrowser) {
     const [{ closeBrowser }, { closeWebShell }] = await Promise.all([
-      import('./browser.ts'), import('./webshell-render.ts'),
+      import('@lolly-tools/node-shell/browsers'), import('@lolly-tools/node-shell/webshell-render'),
     ]);
     await Promise.all([closeBrowser(), closeWebShell()]);
   }

@@ -11,9 +11,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
@@ -26,21 +24,13 @@ import { createPdfAPI } from '../../web/src/bridge/pdf.ts';
 // native-SVG tools — the same "no layout engine" constraint as the svg branch.
 import { svgDomToIr } from '../../web/src/bridge/svg-ir.ts';
 
-// Repo root holding catalog/. In the monorepo this is three levels up from this
-// file; in a bundled serverless function (Vercel) esbuild flattens every module's
-// import.meta.url onto the single output file, so `../../..` no longer lands on
-// the repo root — but catalog/ is preserved under the task cwd via vercel.json
-// `includeFiles`, so fall back to process.cwd(). LOLLY_ROOT overrides both. This
-// mirrors services/mcp/src/paths.ts resolveRoot() (the render path pulls in both).
-function resolveRepoRoot(): string {
-  const marker = (root: string): boolean => existsSync(join(root, 'catalog', 'assets', 'index.json'));
-  if (process.env.LOLLY_ROOT && marker(process.env.LOLLY_ROOT)) return process.env.LOLLY_ROOT;
-  const rel = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-  if (marker(rel)) return rel;
-  if (marker(process.cwd())) return process.cwd();
-  return rel;
-}
-const REPO_ROOT = resolveRepoRoot();
+// Repo root holding catalog/ — the shared resolver (LOLLY_ROOT → marker walk → cwd;
+// see packages/node-shell/src/repo-root.ts for why a fixed `../../..` can't work in
+// the bundled Vercel function). RELATIVE import on purpose: this file is inlined into
+// that function by scripts/build-mcp-fn.ts, whose esbuild config leaves bare package
+// specifiers external — a `@lolly-tools/node-shell` import would dangle in the bundle.
+import { repoRoot } from '../../../packages/node-shell/src/repo-root.ts';
+const REPO_ROOT = repoRoot();
 
 /** One format entry inside a catalog asset record (catalog/assets/index.json). */
 interface CatalogAssetFormat {

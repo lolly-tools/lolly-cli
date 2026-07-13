@@ -16,7 +16,7 @@
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { INSTALL_BROWSERS_DIR } from './browser.ts';
+import { INSTALL_BROWSERS_DIR } from '@lolly-tools/node-shell/browsers';
 
 export async function installBrowserCli(passthrough: string[] = []): Promise<number> {
   const require = createRequire(import.meta.url);

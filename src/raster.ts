@@ -10,17 +10,13 @@
  *                         bytes match a web/desktop Download exactly (webshell-render).
  *
  * run.ts calls this only for non-engine-native formats; svg/emf/eps + data still go
- * through the DOM-free bridge. Mirrors the fast-path in shells/tui/src/engine-render.ts.
+ * through the DOM-free bridge. The tier internals (pxDims, resvg rasterisation, the
+ * web-shell driver) live in @lolly-tools/node-shell, shared with the TUI.
  */
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { JSDOM } from 'jsdom';
-import { serializeUrlState, parseDimension, toPixels } from '@lolly/engine';
-import type { RenderDims } from './webshell-render.ts';
-
-// shells/cli/src → repo root is three levels up. Catalog fonts feed resvg so text-bearing
-// SVG tools rasterise with the brand faces, not whatever the OS happens to have.
-const FONTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'catalog', 'fonts');
+import { serializeUrlState } from '@lolly/engine';
+import { pxDims, rasterizeSvgToPng } from '@lolly-tools/node-shell/raster';
+import type { RenderDims } from '@lolly-tools/node-shell/webshell-render';
 
 interface Runtime {
   getHydrated(): string;
@@ -54,7 +50,7 @@ export async function renderRaster(opts: {
 
   // Tier B — drive the built web shell in the scoped Chromium; capture the exact bytes
   // its own export path downloads (one render path, no drift vs web/desktop).
-  const { renderViaWebShell } = await import('./webshell-render.ts');
+  const { renderViaWebShell } = await import('@lolly-tools/node-shell/webshell-render');
   const query = serializeUrlState(runtime.getModel() as never);
   const { bytes } = await renderViaWebShell(manifest.id, query, fmt, dims);
   return { bytes, usedBrowser: true };
@@ -74,49 +70,4 @@ async function tryRenderSvg(runtime: Runtime, dom: JSDOM): Promise<string | null
   } catch {
     return null;
   }
-}
-
-/** Resolve export dims to plain pixels (converts a physical unit like mm via the engine's
- *  own unit math; falls back to the tool's render size, else 1280×720). */
-function pxDims(dims: RenderDims, manifest: Manifest): { width: number; height: number } {
-  const dpi = dims.dpi && dims.dpi > 0 ? dims.dpi : 300;
-  const render = manifest.render ?? {};
-  const toPx = (v: number | undefined, fallback: number): number => {
-    if (!(typeof v === 'number' && v > 0)) return fallback;
-    const u = dims.unit || 'px';
-    if (u === 'px') return Math.round(v);
-    const d = parseDimension(`${v}${u}`);
-    return d ? Math.round(toPixels(d, dpi)) : Math.round(v);
-  };
-  return { width: toPx(dims.width, render.width ?? 1280), height: toPx(dims.height, render.height ?? 720) };
-}
-
-/** Rasterise an SVG string to a `width`×`height` px PNG via resvg (pure Rust, no browser).
- *  resvg's `fitTo` constrains one axis, so to honour BOTH requested dimensions we set the
- *  root's width/height to the exact target box and render at that intrinsic size — the
- *  SVG's own viewBox + preserveAspectRatio then place the content (letterbox/meet as the
- *  tool authored it), matching the web/desktop raster rather than dropping the height. */
-async function rasterizeSvgToPng(svg: string, width: number, height: number): Promise<Uint8Array> {
-  const { Resvg } = await import('@resvg/resvg-js');
-  const w = Math.max(1, Math.round(width));
-  const h = Math.max(1, Math.round(height));
-  const m = svg.match(/<svg\b([^>]*)>/);
-  let sized = svg;
-  if (m) {
-    let attrs = m[1]!;
-    // Keep a viewBox (the content coordinate space); synthesise one from the root's own
-    // width/height if it lacks one, so the content still scales to the target box.
-    if (!/\bviewBox=/.test(attrs)) {
-      const ow = attrs.match(/\bwidth="([\d.]+)"/)?.[1];
-      const oh = attrs.match(/\bheight="([\d.]+)"/)?.[1];
-      if (ow && oh) attrs += ` viewBox="0 0 ${ow} ${oh}"`;
-    }
-    attrs = attrs.replace(/\s(width|height)="[^"]*"/g, '');   // drop native size, keep viewBox + PAR
-    sized = svg.replace(/<svg\b[^>]*>/, `<svg${attrs} width="${w}" height="${h}">`);
-  }
-  const r = new Resvg(sized, {
-    fitTo: { mode: 'original' },
-    font: { fontDirs: [FONTS_DIR], loadSystemFonts: true },
-  });
-  return r.render().asPng();
 }
