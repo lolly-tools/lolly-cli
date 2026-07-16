@@ -8,17 +8,21 @@
  * CLI is just a different transport, not a different render engine.
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang, parseDataRows } from '@lolly/engine';
 import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
 // scoped Chromium).
-import { NODE_FORMATS } from '@lolly-tools/node-shell/raster';
+import { NODE_FORMATS, pxDims } from '@lolly-tools/node-shell/raster';
 import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
+// Fail loud: never write a degenerate file + exit 0 when the render silently failed.
+import { assertRenderOk } from '@lolly-tools/node-shell/render-integrity';
+// url-shot: capture a live page via the scoped Chromium (shared with the TUI).
+import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
 import { createCliBridge, applyBrandVars } from './bridge.ts';
 import type { Profile, ExportOpts } from '../../../engine/src/bridge/host-v1.ts';
 
@@ -29,9 +33,11 @@ interface RunToolCliArgs {
   params: Record<string, string>;
   outputPath?: string;
   format?: string;
+  /** --share/--link: print a shareable lolly.tools URL for the inputs instead of rendering. */
+  share?: boolean;
 }
 
-export async function runToolCli({ toolId, params, outputPath, format }: RunToolCliArgs): Promise<void> {
+export async function runToolCli({ toolId, params, outputPath, format, share }: RunToolCliArgs): Promise<void> {
   // Lazy import — jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>');
@@ -62,10 +68,17 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
   // under a different transport, so a packed share link must run identically here
   // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(new URLSearchParams(params).toString());
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint } = parseUrlState(
     query,
     tool.manifest,
   );
+  // Print prep + press intent for the browser (Tier-B) export tier. `marks` is passed as
+  // the raw CSV (?marks) rather than round-tripped through parseUrlState's flag map, and
+  // read off the EXPANDED query so a packed link works too. The CMYK press condition uses
+  // a distinct --press-profile flag: url-mode's `profile` means the press condition, but
+  // the CLI's --profile is the user-profile JSON file (readProfile above) — never conflate.
+  const marksRaw = new URLSearchParams(query).get('marks') || null;
+  const pressProfile = params['press-profile'] || null;
 
   // File-typed inputs arrive as a filesystem path (--photo=./pic.jpg → an
   // {__file, path} ref from parseUrlState). The engine can't read files (it's
@@ -86,6 +99,62 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
       bytes: new Uint8Array(buf),
       url: null,
     };
+  }
+
+  // An `asset` input can also take the user's OWN local image (--logo=./brand.png), not
+  // just a catalog id or a lolly.tools URL. When the ref's id resolves to a real file on
+  // disk, load its bytes into a self-contained (baked) AssetRef here — the same in-memory
+  // shape a web upload produces — so the runtime uses it directly instead of asking the
+  // catalog for it. A catalog id (suse/logo/…) isn't a real file, so it falls through to
+  // normal resolution; a tool URL stays 'remote' for compose.
+  for (const input of tool.manifest.inputs ?? []) {
+    if (input.type !== 'asset') continue;
+    const ref = values[input.id];
+    if (!ref || typeof ref !== 'object') continue;
+    const r = ref as { id?: string; source?: string };
+    if (!r.id || r.source === 'remote') continue;   // tool URLs render via compose, not disk
+    let st: Awaited<ReturnType<typeof stat>> | undefined;
+    try { st = await stat(resolve(process.cwd(), r.id)); } catch { continue; }  // not a local file → catalog
+    if (!st.isFile()) continue;
+    const abs = resolve(process.cwd(), r.id);
+    const mime = mimeForFile(abs);
+    const isVec = mime === 'image/svg+xml';
+    const bytes = await readFile(abs);
+    values[input.id] = {
+      source: 'user',
+      id: basename(abs),
+      type: isVec ? 'vector' : 'raster',
+      format: isVec ? 'svg' : (mime.split('/')[1] || 'png'),
+      url: `data:${mime};base64,${bytes.toString('base64')}`,
+      meta: { baked: true, name: basename(abs) },
+    };
+  }
+
+  // `--<blocksInput>-data=rows.csv` populates a `blocks` input from a CSV/JSON file via the
+  // SAME engine importer the web offers — so a chart/table can be filled from a spreadsheet
+  // headlessly instead of hand-encoding tilde/JSON rows. Read from `params` (the flag isn't
+  // a declared input, so parseUrlState ignores it).
+  for (const input of tool.manifest.inputs ?? []) {
+    if (input.type !== 'blocks') continue;
+    const dataPath = params[`${input.id}-data`];
+    if (!dataPath) continue;
+    const text = await readFile(resolve(process.cwd(), dataPath), 'utf8');
+    const fields = (input.fields ?? []) as Array<{ id: string; label?: string; type?: string }>;
+    const { rows, truncated } = parseDataRows(text, { fields });
+    values[input.id] = rows as (typeof values)[string];
+    process.stderr.write(`✓ Imported ${rows.length} row${rows.length === 1 ? '' : 's'} into --${input.id} from ${dataPath}${truncated ? ' (row cap reached)' : ''}\n`);
+  }
+
+  // --share/--link: print a shareable lolly.tools link for the current inputs instead of
+  // rendering (the CLI half of the web Share dialog + the TUI's `u`). Handled BEFORE the
+  // transform/format paths so it works for any tool; a teammate reopens the exact config
+  // without hand-reconstructing a URL. (A `file`-typed input has no shareable form, so it
+  // is simply absent from the link — same as the web.)
+  if (share) {
+    const runtime = await createRuntime(tool, host, values);
+    const q = serializeUrlState(runtime.getModel());
+    process.stdout.write(`https://lolly.tools/#/tool/${tool.manifest.id}${q ? '?' + q : ''}\n`);
+    return;
   }
 
   // Transform-path tools (on-device utilities) produce their output via the
@@ -129,41 +198,98 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
 
   const runtime = await createRuntime(tool, host, values);
 
-  // Set up the rendering DOM. Brand vars go on first: the catalog's semantic
-  // colour slots (--brand-primary, --brand-surface, …) land on the canvas root
-  // BEFORE hydration, so a template's var(--brand-primary, fallback) reads the
-  // same brand via web, URL mode, and CLI (plans/brand-token-contract.md §7).
-  const canvas = dom.window.document.getElementById('canvas')!;
-  await applyBrandVars(canvas, host);
-  canvas.innerHTML = runtime.getHydrated();
-
-  // Pass through requested output dimensions. A physical unit (mm/cm/in/pt)
-  // qualifies the value so the engine converts it for the format; px is the
-  // default. (e.g. --width=210 --height=297 --unit=mm --export=svg → A4.)
-  const u = unit || 'px';
-  const qual = (v: number | null | undefined): string | number | undefined => (typeof v === 'number' && v > 0 ? (u !== 'px' ? `${v}${u}` : v) : undefined);
-  const exportOpts: ExportOpts & { password?: string } = { width: qual(width), height: qual(height) };
-  if (u !== 'px') exportOpts.dpi = dpi || 300;
-  // --password= sets the standard PDF's open-password (basic lock).
-  if (targetFormat === 'pdf' && password) exportOpts.password = password;
-
-  // Engine-native / data formats (svg/emf/eps + html/json/csv/ics/vcf) render DOM-free
-  // through the bridge. Raster/PDF/video route to raster.ts: Tier A (resvg, no browser)
-  // for PNG from an SVG-native tool, else Tier B (the scoped Chromium driving the built
-  // web shell). `usedBrowser` tells us to tear the browser + server down before exit.
+  let finalFormat = targetFormat;         // the format actually written (may fall back to html)
   let buf: Buffer;
-  let usedBrowser = false;
-  if (NODE_FORMATS.includes(targetFormat.toLowerCase())) {
-    const blob = await runtime.export(canvas, targetFormat, exportOpts);
-    buf = Buffer.from(await blob.arrayBuffer());
+  let usedBrowser = false;                // a pooled browser was launched → tear it down before exit
+  let webShellExport = false;             // the Tier-B web shell produced the bytes → it owns c2pa
+
+  if (isCaptureTool(tool.manifest)) {
+    // Capture tools (url-shot): drive the scoped Chromium straight at the target URL —
+    // jsdom can't rasterise a live page. The SAME capture path the TUI uses; a clear,
+    // actionable BrowserError surfaces if no browser is installed (`lolly install-browser`).
+    const params = captureParamsFrom(runtime.getModel() as Array<{ id: string; value: unknown }>);
+    const cdims = pxDims(
+      { width: width ?? undefined, height: height ?? undefined, unit: unit ?? undefined, dpi: dpi ?? undefined },
+      tool.manifest as { render?: { width?: number; height?: number } },
+    );
+    const cap = await captureUrl(params, targetFormat, cdims);
+    buf = Buffer.from(cap.bytes);
+    usedBrowser = true;                   // captureUrl launched the pooled Chromium
   } else {
-    const { renderRaster } = await import('./raster.ts');
-    const res = await renderRaster({
-      runtime, dom, manifest: tool.manifest, format: targetFormat,
-      dims: { width: width ?? undefined, height: height ?? undefined, unit: unit ?? undefined, dpi: dpi ?? undefined, ...(password ? { password } : {}) },
-    });
-    buf = Buffer.from(res.bytes);
-    usedBrowser = res.usedBrowser;
+    // Set up the rendering DOM. Brand vars go on first: the catalog's semantic
+    // colour slots (--brand-primary, --brand-surface, …) land on the canvas root
+    // BEFORE hydration, so a template's var(--brand-primary, fallback) reads the
+    // same brand via web, URL mode, and CLI (plans/brand-token-contract.md §7).
+    const canvas = dom.window.document.getElementById('canvas')!;
+    await applyBrandVars(canvas, host);
+    canvas.innerHTML = runtime.getHydrated();
+
+    // Pass through requested output dimensions. A physical unit (mm/cm/in/pt)
+    // qualifies the value so the engine converts it for the format; px is the
+    // default. (e.g. --width=210 --height=297 --unit=mm --export=svg → A4.)
+    const u = unit || 'px';
+    const qual = (v: number | null | undefined): string | number | undefined => (typeof v === 'number' && v > 0 ? (u !== 'px' ? `${v}${u}` : v) : undefined);
+    const exportOpts: ExportOpts & { password?: string } = { width: qual(width), height: qual(height) };
+    if (u !== 'px') exportOpts.dpi = dpi || 300;
+    // --password= sets the standard PDF's open-password (basic lock).
+    if (targetFormat === 'pdf' && password) exportOpts.password = password;
+
+    try {
+      // Engine-native / data formats (svg/emf/eps/dxf + html/json/csv/ics/vcf) render DOM-free
+      // through the bridge. Raster/PDF/video route to raster.ts: Tier A (resvg, no browser)
+      // for PNG from an SVG-native tool, else Tier B (the scoped Chromium driving the built
+      // web shell). `usedBrowser` tells us to tear the browser + server down before exit.
+      if (NODE_FORMATS.includes(targetFormat.toLowerCase())) {
+        const blob = await runtime.export(canvas, targetFormat, exportOpts);
+        buf = Buffer.from(await blob.arrayBuffer());
+        // The DOM-free render is this runtime's own output — a swallowed onInit failure
+        // (e.g. an unavailable capability) yields an empty file. Refuse to write it.
+        assertRenderOk({ hookErrors: runtime.hookErrors, format: targetFormat, bytes: buf });
+      } else {
+        const { renderRaster } = await import('./raster.ts');
+        const res = await renderRaster({
+          runtime, dom, manifest: tool.manifest, format: targetFormat,
+          dims: {
+            width: width ?? undefined, height: height ?? undefined, unit: unit ?? undefined, dpi: dpi ?? undefined,
+            ...(password ? { password } : {}),
+            ...(bleed ? { bleed } : {}),
+            ...(marksRaw ? { marks: marksRaw } : {}),
+            ...(imprint ? { imprint: true } : {}),
+            ...(pressProfile ? { pressProfile } : {}),
+            // Forward the c2pa setting so the browser tier stamps it (single authority); the
+            // Node post-stamp below is skipped when the browser ran, avoiding a double-stamp.
+            ...(c2pa != null ? { c2pa: c2pa.on, c2paDays: c2pa.days ?? undefined } : {}),
+          },
+        });
+        buf = Buffer.from(res.bytes);
+        usedBrowser = res.usedBrowser;
+        webShellExport = res.usedBrowser; // Tier B == the web shell; it owns c2pa for that path
+        // Tier A (resvg) rasterises THIS runtime's own SVG, so a swallowed hook failure
+        // yields a blank raster — gate it. Tier B re-renders in a real browser whose host
+        // has the capability, so hookErrors don't describe those bytes; renderViaWebShell
+        // already throws if the browser produced nothing.
+        if (!usedBrowser) assertRenderOk({ hookErrors: runtime.hookErrors, format: targetFormat, bytes: buf });
+      }
+    } catch (e) {
+      // HTML-layout tools have no <svg> (svg/emf/eps/dxf throw), and Tier-B formats need a
+      // browser + a built web shell. When either is unavailable, fall back to writing HTML
+      // so an export ALWAYS yields an artifact — the exact graceful fallback the TUI ships.
+      // A genuine render failure (RenderIntegrityError: "render produced no usable output")
+      // does NOT match this signature, so it correctly rethrows and fails loud.
+      const msg = (e as Error).message;
+      if (finalFormat !== 'html' && /<svg>|requires an|browser engine|needs a browser|no built web shell|chromium/i.test(msg)) {
+        const blob = await runtime.export(canvas, 'html', {});
+        buf = Buffer.from(await blob.arrayBuffer());
+        assertRenderOk({ hookErrors: runtime.hookErrors, format: 'html', bytes: buf });
+        finalFormat = 'html';
+        webShellExport = false;
+        // Retarget --output to a .html name so the file's extension matches its content.
+        if (outputPath) outputPath = outputPath.replace(/\.[^./\\]+$/, '') + '.html';
+        process.stderr.write(`Note: "${targetFormat}" needs a browser engine here — wrote HTML instead (${msg.split('\n')[0]}).\n`);
+      } else {
+        throw e;
+      }
+    }
   }
 
   // --c2pa[=7|30|90|365] stamps Content Credentials into the finished bytes —
@@ -174,25 +300,28 @@ export async function runToolCli({ toolId, params, outputPath, format }: RunTool
   // never-fail-the-export policy. Ephemeral on-device signing only — verifiers
   // report it unverified; the enrolled-identity path is a browser feature (see
   // docs/content-credentials-identity.md).
-  if (c2pa?.on && C2PA_FORMATS.includes(targetFormat)) {
-    if (targetFormat === 'pdf' && password) {
+  if (c2pa?.on && !webShellExport && C2PA_FORMATS.includes(finalFormat)) {
+    // Only the paths that produced their OWN bytes here (DOM-free svg, Tier-A resvg PNG,
+    // url-shot capture) stamp in Node. The Tier-B browser tier already stamped via the
+    // forwarded ?c2pa param (exportUrl) — re-stamping would double the credential.
+    if (finalFormat === 'pdf' && password) {
       process.stderr.write('Warning: password-locked export — skipping Content Credentials (an encrypted document cannot take the C2PA update).\n');
     } else {
       try {
         // The "what was this made from / where / when / how big" record, matching
         // the web shell's tools.lolly.export enrichment (shared with the TUI —
         // buildExportC2paOpts also attaches the profile author under `useDetails`).
-        const stamped = await embedC2pa(new Uint8Array(buf), targetFormat, buildExportC2paOpts({
+        const stamped = await embedC2pa(new Uint8Array(buf), finalFormat, buildExportC2paOpts({
           surface: 'cli', manifest: tool.manifest, model: runtime.getModel(),
-          format: targetFormat, dims: { width, height, unit, dpi }, days: c2pa.days, profile,
+          format: finalFormat, dims: { width, height, unit, dpi }, days: c2pa.days, profile,
         }));
         buf = Buffer.from(stamped.buffer as ArrayBuffer, stamped.byteOffset, stamped.byteLength);
       } catch (e) {
         process.stderr.write(`Warning: Content Credentials not attached — ${(e as Error).message}\n`);
       }
     }
-  } else if (c2pa?.on) {
-    process.stderr.write(`Warning: format "${targetFormat}" has no C2PA container — Content Credentials skipped.\n`);
+  } else if (c2pa?.on && !webShellExport) {
+    process.stderr.write(`Warning: format "${finalFormat}" has no C2PA container — Content Credentials skipped.\n`);
   }
 
   if (outputPath) {
@@ -243,14 +372,26 @@ async function readProfile(profilePath: string | undefined): Promise<Profile> {
   }
 }
 
+// True when the tool captures a live URL (url-shot) — its export drives Chromium
+// straight at the page, bypassing the DOM export path. Mirrors the TUI's isCaptureTool.
+function isCaptureTool(manifest: { capabilities?: string[] }): boolean {
+  return (manifest.capabilities ?? []).includes('capture');
+}
+
 // Infer an export format from an --output filename's extension, but only when it
 // names a format the tool actually declares — otherwise return null so the
 // caller falls back to formats[0]. (.jpeg normalises to the canonical 'jpg'.)
 function formatFromOutput(path: string, formats: string[]): string | null {
   const ext = extname(path).slice(1).toLowerCase();
   if (!ext) return null;
-  const norm = ext === 'jpeg' ? 'jpg' : ext;
-  return formats.includes(norm) ? norm : null;
+  // Match against the tool's declared formats, tolerating the jpg/jpeg synonym split
+  // (some tools declare 'jpeg', others 'jpg'). Prefer the exact declared spelling, so
+  // e.g. `--output=x.jpeg` on a tool that declares 'jpeg' picks jpeg (not a silent SVG
+  // fallback), and on a tool that declares 'jpg' picks jpg.
+  if (formats.includes(ext)) return ext;
+  const alias = ext === 'jpeg' ? 'jpg' : ext === 'jpg' ? 'jpeg' : null;
+  if (alias && formats.includes(alias)) return alias;
+  return null;
 }
 
 // Extension → MIME for a file-typed input loaded from disk. The hook can read
@@ -337,8 +478,8 @@ export async function showToolInputsCli(toolId: string, opts: { lang?: Lang } = 
  *  explains how to actually express them (the forms are otherwise undocumented). */
 function syntaxHint(id: string, type: string): string {
   switch (type) {
-    case 'asset':   return 'a catalog id (see `lolly assets`) or a lolly.tools tool URL';
-    case 'blocks':  return `a JSON array --${id}='[{…}]', or tilde rows --${id}='label,val,#hex~label2,val2'`;
+    case 'asset':   return 'a catalog id (see `lolly assets`), a local image file, or a lolly.tools tool URL';
+    case 'blocks':  return `a JSON array --${id}='[{…}]', tilde rows --${id}='label,val,#hex~…', or a data file --${id}-data=rows.csv`;
     case 'vector':  return `one flag per field, e.g. --${id}.<field>=<number>`;
     case 'file':    return 'a path to your file (read locally, never uploaded)';
     case 'color':   return '#RRGGBB (the # is optional) or a token path';

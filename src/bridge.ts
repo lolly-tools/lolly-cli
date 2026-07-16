@@ -12,7 +12,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -30,6 +30,13 @@ import { svgDomToIr } from '../../web/src/bridge/svg-ir.ts';
 // that function by scripts/build-mcp-fn.ts, whose esbuild config leaves bare package
 // specifiers external — a `@lolly-tools/node-shell` import would dangle in the bundle.
 import { repoRoot } from '../../../packages/node-shell/src/repo-root.ts';
+// host.text (HarfBuzz text-to-path). RELATIVE for the same reason as repo-root above —
+// this file is inlined into the Vercel MCP function, where a bare @lolly-tools/node-shell
+// specifier would dangle. Lazily loads its WASM on first shape, so attaching it is free.
+import { createNodeTextAPI } from '../../../packages/node-shell/src/text.ts';
+// url-shot page capture (scoped Chromium). RELATIVE for the MCP bundle; its browser is
+// lazy-loaded, so importing it costs nothing until a capture actually runs.
+import { captureUrl } from '../../../packages/node-shell/src/url-capture.ts';
 const REPO_ROOT = repoRoot();
 
 /** One format entry inside a catalog asset record (catalog/assets/index.json). */
@@ -164,6 +171,13 @@ export async function createCliBridge(
   // Perceptual colour tools (v1.40) — pure engine math, attached verbatim
   // (same object the web bridge attaches, so shells can never drift).
   host.color = makeColorApi();
+
+  // host.text — text-to-path (HarfBuzz WASM), the SAME shaping the web shell uses, so a
+  // tool that outlines text via host.text renders identically in the terminal. Without
+  // it, brand-lockup (and any host.text-in-hooks tool) throws in onInit and emits an
+  // empty SVG. Fonts resolve off disk under the repo root (see text.ts). Node-only fonts
+  // are all sfnt; the WASM loads lazily on first shape.
+  host.text = createNodeTextAPI({ repoRoot: REPO_ROOT });
 
   host.assets = {
     async get(id) {
@@ -343,7 +357,17 @@ export async function createCliBridge(
         const text = emitEps(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi, cmyk: format === 'eps-cmyk', meta: opts.meta as { title?: string } | undefined });
         return new Blob([text], { type: 'application/postscript' });
       }
-      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use a text/data format (html, svg, emf, eps, json, csv, ics, vcf), or run the Tauri-bundled CLI for raster/pdf/zip.`);
+      if (format === 'dxf') {
+        // DXF is the same SVG-IR path as EMF/EPS — a fourth sink on svgDomToIr, so a
+        // native-<svg> tool exports vector CAD DXF browser-free (no 150MB Chromium for
+        // what is fundamentally text). Text is outlined upstream (host.text present).
+        const svg = node.querySelector('svg') ?? (node.tagName?.toLowerCase() === 'svg' ? node : null);
+        if (!svg) throw new Error('DXF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'DXF' });
+        const { text } = emitDxf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
+        return new Blob([text], { type: 'image/vnd.dxf' });
+      }
+      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use a text/data format (html, svg, emf, eps, dxf, json, csv, ics, vcf), or run the Tauri-bundled CLI for raster/pdf/zip.`);
     },
     async download() {
       throw new Error('CLI cannot trigger a browser download — pipe the blob to a file via --output');
@@ -356,14 +380,28 @@ export async function createCliBridge(
     },
   };
 
-  // Page capture needs a real, authoritative browser engine — navigate a URL and
-  // read back its pixels. The lean node CLI ships no browser (mirroring its raster
-  // stance above), so capture is fulfilled by the Tauri-bundled CLI (WebView) or a
-  // headless-Chromium build. Stub here so 'capture'-capability tools fail clearly
-  // rather than with an undefined-property error.
+  // Page capture — navigate a URL in the scoped Chromium and read back its pixels. The
+  // CLI ships the same browsers.ts as the TUI, so this is now real (not a stub): a tool
+  // that calls host.capture.page in a hook works when a browser is installed, and gets a
+  // clear, actionable BrowserError (`lolly install-browser`) when it isn't. Mirrors the
+  // TUI bridge. (url-shot's EXPORT is routed straight to captureUrl in run.ts, bypassing
+  // this — but this fulfils the 'capture' capability for the hook + non-CLI callers.)
   host.capture = {
-    async page() {
-      throw new Error('Page capture needs a browser engine — unavailable in the node CLI. Use the desktop app, or a headless-Chromium build.');
+    async page(spec) {
+      const { bytes, mime } = await captureUrl(
+        {
+          url: spec.url, scrollDepth: spec.scrollDepth ?? 0, waitMs: spec.waitMs ?? 500,
+          css: spec.css ?? '',
+          cropLeft: spec.crop?.left ?? 0, cropRight: spec.crop?.right ?? 0,
+          cropTop: spec.crop?.top ?? 0, cropBottom: spec.crop?.bottom ?? 0,
+          recolor: 'none', tintColor: '#111111', hue: 0,   // recolor 'none' ⇒ tint unused
+          zoom: 1,                                          // zoom rides in spec.css (html{zoom:…})
+        },
+        'png',
+        { width: spec.width, height: spec.height ?? spec.width, dpi: (spec.dpr ?? 1) * 96 },
+      );
+      const url = `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
+      return { source: 'remote', id: `capture:${spec.url}`, type: 'raster', format: 'png', url, width: spec.width, height: spec.height };
     },
   };
 
