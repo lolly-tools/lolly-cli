@@ -62,7 +62,10 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
   // (the bridge serves it via host.profile.get). A missing/invalid file warns
   // and continues with an empty profile, so the render still runs.
   const profile = await readProfile(params.profile);
-  const host = await createCliBridge({ dom, profile });
+  // Thread the manifest's network.allowlist into host.net (same per-tool gate the
+  // web view applies post-load) — without it every host.net fetch on the CLI
+  // rejects, breaking the one-render-path parity for network-capable tools.
+  const host = await createCliBridge({ dom, profile, networkAllowlist: tool.manifest.network?.allowlist });
 
   // Expand a packed `z=…` param back into a plain query first — the CLI is URL mode
   // under a different transport, so a packed share link must run identically here

@@ -20,6 +20,13 @@ import type {
 // PDF metadata inspect/strip is pure pdf-lib (no DOM), so the lean node CLI
 // shares the web shell's implementation rather than duplicating it.
 import { createPdfAPI } from '../../web/src/bridge/pdf.ts';
+// PPTX inspect/rebrand is engine primitives + fflate (plain JS) with the XML
+// parser injected, so the CLI shares the web impl and supplies jsdom's DOMParser.
+import { createPptxAPI } from '../../web/src/bridge/pptx.ts';
+// host.net allowlisted fetch is DOM-free too (global fetch + TransformStream, both
+// Node ≥18 globals), so the CLI shares the web module verbatim — the prefix-match
+// rules and the 64 MB counting-stream cap can never drift between shells.
+import { createNetAPI } from '../../web/src/bridge/net.ts';
 // SVG→EMF IR walk is DOM-light (attribute reads), so it runs under jsdom for
 // native-SVG tools — the same "no layout engine" constraint as the svg branch.
 import { svgDomToIr } from '../../web/src/bridge/svg-ir.ts';
@@ -86,10 +93,13 @@ type IconThemeDef = ReturnType<typeof parseIconThemesDoc>[number];
 interface CliBridgeOpts {
   profile?: Profile;
   dom: { window: Window & typeof globalThis };
+  /** The loaded manifest's `network.allowlist` — what host.net may fetch this
+   *  run. Absent/empty ⇒ every host.net fetch rejects (same as the web shell). */
+  networkAllowlist?: readonly string[];
 }
 
 export async function createCliBridge(
-  { profile = {}, dom }: CliBridgeOpts = {} as CliBridgeOpts,
+  { profile = {}, dom, networkAllowlist }: CliBridgeOpts = {} as CliBridgeOpts,
 ): Promise<HostV1> {
   const w = dom.window;
   // Pre-load the asset catalog so query/get can be synchronous-ish.
@@ -178,6 +188,12 @@ export async function createCliBridge(
   // empty SVG. Fonts resolve off disk under the repo root (see text.ts). Node-only fonts
   // are all sfnt; the WASM loads lazily on first shape.
   host.text = createNodeTextAPI({ repoRoot: REPO_ROOT });
+
+  // host.net — allowlisted fetch for tools that declared the 'network' capability,
+  // built per-invocation from the loaded manifest's network.allowlist (callers thread
+  // it in via CliBridgeOpts). Deny happens before any I/O, so an empty/absent allowlist
+  // means the API exists but every fetch rejects — identical fail-closed stance to web.
+  host.net = createNetAPI({ allowlist: networkAllowlist });
 
   host.assets = {
     async get(id) {
@@ -409,6 +425,11 @@ export async function createCliBridge(
   // browser engine), metadata surgery is pure pdf-lib, which runs fine in node —
   // so the lean CLI can clean PDFs too.
   host.pdf = createPdfAPI();
+
+  // PPTX deck inspect + rebrand. The web impl already isolates its two host
+  // dependencies (fflate zip codec, injectable XML parser), so the CLI reuses
+  // it wholesale — jsdom's DOMParser stands in for the browser's.
+  host.pptx = createPptxAPI({ parseXml: (xml) => new w.DOMParser().parseFromString(xml, 'application/xml') });
 
   // Compose — render another tool to an embeddable asset (tool composition).
   // The lean node CLI has no rasteriser, so it composes only children that export

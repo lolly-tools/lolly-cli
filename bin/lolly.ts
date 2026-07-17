@@ -20,6 +20,7 @@
  *   lolly install-browser                    # one-time Chromium download for png/jpg/pdf/video
  *                                                 # of HTML-layout tools (Tier B); needs `npm run build:web`
  *   lolly validate <file> [--json] [--trust-anchor=<root.pem>]  # check Content Credentials
+ *   lolly smoke [--only=a,b] [--format=svg]  # render every catalog tool at defaults (CI gate)
  *
  * Architectural note: this CLI is URL mode under a different transport.
  * --foo=bar argv pairs become the same input values the web shell would
@@ -80,6 +81,17 @@ try {
     if (!csv) throw new Error('usage: lolly batch <rows.csv> [--out-dir=./out] [--keep-going]   (or --template=tool,tool)');
     const { runBatchCli } = await import('../src/batch.ts');
     exit(await runBatchCli(csv, { outDir: flags['out-dir'] || './out', keepGoing: 'keep-going' in flags }));
+  }
+
+  // `smoke` is a reserved subcommand: render EVERY catalog tool at manifest defaults to
+  // its first Node-native format (browser-free; html as the layout fallback), ✓/✗ per
+  // tool, non-zero exit on any failure — the catalog-wide gate CI runs so a hooks.js
+  // regression can never ship a tool that renders blank.
+  // `lolly smoke [--only=id,id] [--format=svg]`.
+  if (args[0] === 'smoke') {
+    const flags = parseArgs(args.slice(1));
+    const { smokeCli } = await import('../src/smoke.ts');
+    exit(await smokeCli({ only: flags.only, format: flags.format }));
   }
 
   // A pasted lolly.tools link is a fully-configured tool URL: parse it into a toolId +
