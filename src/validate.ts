@@ -22,7 +22,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { verifyC2pa, pemToDer, c2paTrustAnchors } from '@lolly/engine';
+import { verifyC2pa, resolveVerdict, defaultTrustAnchors } from '@lolly/engine';
 
 const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', YELLOW = '\x1b[33m', RESET = '\x1b[0m';
 const tty = process.stdout.isTTY;
@@ -44,33 +44,50 @@ export async function validateCli(
   const anchorPaths = trustAnchors
     ?? process.argv.map((a) => /^--trust-anchor=(.+)$/.exec(a)?.[1]).filter((x): x is string => Boolean(x));
   // The vendored C2PA trust list (Google/Gemini, camera makers, …) plus any
-  // --trust-anchor=<root.pem> the caller pins, so recognised signers read as
-  // trusted here exactly as they do in the web /valid view.
-  const anchors: Uint8Array[] = [...c2paTrustAnchors()];
-  for (const p of anchorPaths) anchors.push(pemToDer(await readFile(p, 'utf8')));
+  // --trust-anchor=<root.pem> the caller pins. NOTE the real policy: UNLIKE
+  // the web /valid view, the CLI does NOT pin the Lolly CA root — a
+  // Lolly-CA-signed export that reads "Verified" on /valid reads plain
+  // "Credential intact" here unless its root is pinned by flag. Deliberate or
+  // not, that split is now explicit in the engine's defaultTrustAnchors
+  // (engine/src/c2pa-verdict.ts) and flagged for a product decision in
+  // plans/maintainability-2026-07-18.md.
+  const extra: string[] = [];
+  for (const p of anchorPaths) extra.push(await readFile(p, 'utf8'));
+  const anchors = defaultTrustAnchors({ includeLollyRoot: false, extra });
   const bytes = new Uint8Array(await readFile(filePath));
   const report = await verifyC2pa(bytes, { trustAnchors: anchors });
 
   if (json) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   } else {
-    const fails = report.checks.filter((c) => !c.ok && c.code !== 'signingCredential.untrusted');
-    const expiredOnly = fails.length === 1 && fails[0]!.code === 'signingCredential.expired';
-    const headline = report.madeWithLolly
+    // The engine's shared verdict ladder (resolveVerdict, engine/src/
+    // c2pa-verdict.ts) replaces the private ladder + expired-only re-derivation
+    // that used to live here; the strings below are this surface's unchanged
+    // rendering of each semantic state. Two deliberate CLI quirks, preserved:
+    //  • partsMadeWithLolly is elevated to a headline here (resolveVerdict
+    //    keeps it a flag, matching the web hero, where parts is only a
+    //    scorecard pip) — it can only fire on the 'trusted'/'valid' states,
+    //    exactly the rung it occupied before (after likely, before expired);
+    //  • there is no separate "Verified" headline for a CA-trusted signer
+    //    (the web /valid has one): 'trusted' renders as "Credential intact",
+    //    with the identity shown in the facts below.
+    const v = resolveVerdict(report);
+    const headline = v.state === 'lolly'
       ? paint(GREEN, '✦ Made with Lolly') + paint(DIM, ' — credential intact, file unchanged since export')
-      : report.delivered && report.trusted
+      : v.state === 'delivered'
         ? paint(GREEN, '◆ Delivered by Lolly') + paint(DIM, ' — verified authentic official asset; delivered by Lolly, not created by it')
-      : report.likelyMadeWithLolly
+      : v.state === 'likelyLolly'
         ? paint(YELLOW, '~ Likely made with Lolly') + paint(DIM, ' — the credential\'s own content checks out and records a Lolly export, but this file\'s bytes no longer match it')
-      : report.partsMadeWithLolly
+      : v.partsMadeWithLolly
         ? paint(YELLOW, '~ Parts made with Lolly') + paint(DIM, ' — the intact provenance chain records Lolly steps, but the file as it stands was produced by another tool')
-      : expiredOnly
+      : v.state === 'expired'
         ? paint(YELLOW, '! Credential expired') + paint(DIM, ' — the file still matches what was signed; the one-year on-device certificate has lapsed')
-        : {
-          valid: paint(GREEN, '✓ Credential intact') + paint(DIM, ' — signed on-device (integrity, not identity)'),
-          invalid: paint(RED, '✕ Credential broken') + paint(DIM, ' — the file no longer matches what was signed'),
-          none: paint(DIM, '○ No Content Credentials found'),
-        }[report.state];
+      : v.state === 'invalid'
+        ? paint(RED, '✕ Credential broken') + paint(DIM, ' — the file no longer matches what was signed')
+      : v.state === 'none'
+        ? paint(DIM, '○ No Content Credentials found')
+        // 'valid' and 'trusted' — see the no-separate-Verified-headline note above.
+        : paint(GREEN, '✓ Credential intact') + paint(DIM, ' — signed on-device (integrity, not identity)');
     process.stdout.write(`${paint(BOLD, filePath)}${report.format ? paint(DIM, `  [${report.format}]`) : ''}\n${headline}\n`);
     if (report.reason && report.state !== 'invalid') process.stdout.write(paint(DIM, `  ${clean(report.reason)}\n`));
     if (report.claim && !report.madeWithLolly) {
