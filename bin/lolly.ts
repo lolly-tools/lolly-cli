@@ -14,12 +14,16 @@
  *                                                 # (7|30|90|365-day ephemeral cert; =off forces off)
  *   lolly <tool-id> --export=pdf --bleed=3mm --marks=crop,reg,bars  # print prep (pdf/pdf-cmyk/cmyk-tiff)
  *   lolly <tool-id> --export=png --imprint   # embed the durable Lolly pixel watermark (raster)
+ *   lolly <tool-id> --export=png --durable=1 # embed the durable Content Credential (neural
+ *                                                 # TrustMark mark; survives metadata stripping — Tier B)
  *   lolly <tool-id> --export=pdf-cmyk --press-profile=fogra39       # CMYK press condition
  *                                                 # (NB: --profile is the user-profile FILE, not the press condition)
  *   lolly <tool-id> --export=png             # raster: no browser for SVG-native tools
  *   lolly install-browser                    # one-time Chromium download for png/jpg/pdf/video
  *                                                 # of HTML-layout tools (Tier B); needs `npm run build:web`
  *   lolly validate <file> [--json] [--trust-anchor=<root.pem>]  # check Content Credentials
+ *   lolly validate <file> --deep             # + neural pixel-watermark scan (TrustMark /
+ *                                                 # Content Seal / Lolly durable mark; Tier B)
  *   lolly smoke [--only=a,b] [--format=svg]  # render every catalog tool at defaults (CI gate)
  *
  * Architectural note: this CLI is URL mode under a different transport.
@@ -44,9 +48,10 @@ try {
   // Credentials verification via the same engine module as the web /valid view.
   if (args[0] === 'validate') {
     const file = args.find((a, i) => i > 0 && !a.startsWith('--'));
-    if (!file) throw new Error('usage: lolly validate <file> [--json] [--trust-anchor=<root.pem>]');
+    if (!file) throw new Error('usage: lolly validate <file> [--json] [--deep] [--trust-anchor=<root.pem>]');
     const { validateCli } = await import('../src/validate.ts');
-    exit(await validateCli(file, { json: 'json' in parseArgs(args.slice(1)) }));
+    const flags = parseArgs(args.slice(1));
+    exit(await validateCli(file, { json: 'json' in flags, deep: 'deep' in flags }));
   }
 
   // `install-browser` is a reserved subcommand: download Chromium for the Tier-B render

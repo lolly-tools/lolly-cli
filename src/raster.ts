@@ -39,10 +39,11 @@ export async function renderRaster(opts: {
 
   // Tier A — PNG from an SVG-native tool: resvg rasterises the engine's own SVG. No
   // browser, no built web shell. jpg/webp/pdf/video fall through to Tier B (resvg is
-  // PNG-only, and layout formats need a real engine). A pixel-watermark (imprint) request
-  // also falls through: resvg can't embed the DCT mark, so the web shell's imprintCanvas
-  // must do it (exportUrl carries ?imprint=1 from dims.imprint).
-  if (fmt === 'png' && !dims.imprint) {
+  // PNG-only, and layout formats need a real engine). A pixel-watermark (imprint) or
+  // durable-credential (TrustMark) request also falls through: resvg can't embed either
+  // mark, so the web shell's imprintCanvas / durableEmbedCanvas must do it (exportUrl
+  // carries ?imprint=1 / ?durable=1 from the dims).
+  if (fmt === 'png' && !dims.imprint && !dims.durable) {
     const svg = await tryRenderSvg(runtime, dom);
     if (svg) {
       const { width, height } = pxDims(dims, manifest);

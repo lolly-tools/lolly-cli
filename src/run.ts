@@ -16,7 +16,7 @@ import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
 // scoped Chromium).
-import { NODE_FORMATS, pxDims } from '@lolly-tools/node-shell/raster';
+import { NODE_FORMATS, pxDims, matchedExportFormat } from '@lolly-tools/node-shell/raster';
 import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 // Fail loud: never write a degenerate file + exit 0 when the render silently failed.
@@ -71,7 +71,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
   // under a different transport, so a packed share link must run identically here
   // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(new URLSearchParams(params).toString());
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable } = parseUrlState(
     query,
     tool.manifest,
   );
@@ -184,12 +184,19 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
     return;
   }
 
+  // The runtime resolves asset refs (catalog ids → AssetRefs with a `format`), which
+  // the matchExportFormat default below reads — so it's created before format resolution.
+  const runtime = await createRuntime(tool, host, values);
+
   // Format resolution mirrors URL mode: an explicit flag wins (--export= arrives
   // as `format`, --format= as `paramFormat`); otherwise infer it from the
-  // --output extension; otherwise fall back to the tool's first declared format.
+  // --output extension; otherwise a manifest-flagged matchExportFormat input
+  // defaults to its uploaded file's own format (a dropped JPEG → jpg — same
+  // rule as the web shell); otherwise the tool's first declared format.
   const targetFormat =
     format ?? paramFormat ??
     (outputPath ? formatFromOutput(outputPath, tool.manifest.render.formats) : null) ??
+    matchedExportFormat(tool.manifest, runtime.getModel() as Array<{ id: string; value: unknown }>) ??
     tool.manifest.render.formats[0]!;
 
   if (!tool.manifest.render.formats.includes(targetFormat)) {
@@ -198,8 +205,6 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
       `Supported: ${tool.manifest.render.formats.join(', ')}`,
     );
   }
-
-  const runtime = await createRuntime(tool, host, values);
 
   let finalFormat = targetFormat;         // the format actually written (may fall back to html)
   let buf: Buffer;
@@ -258,6 +263,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
             ...(bleed ? { bleed } : {}),
             ...(marksRaw ? { marks: marksRaw } : {}),
             ...(imprint ? { imprint: true } : {}),
+            ...(durable ? { durable: true } : {}),
             ...(pressProfile ? { pressProfile } : {}),
             // Forward the c2pa setting so the browser tier stamps it (single authority); the
             // Node post-stamp below is skipped when the browser ran, avoiding a double-stamp.

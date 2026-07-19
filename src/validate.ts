@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * `lolly validate <file> [--json] [--trust-anchor=<root.pem>]` —
+ * `lolly validate <file> [--json] [--deep] [--trust-anchor=<root.pem>]` —
  * on-device Content Credentials check for any stampable container (pdf,
  * png/apng, jpg, gif, svg, tiff, webp, mp4, webm).
+ *
+ * `--deep` additionally runs the web shell's neural pixel-watermark scan
+ * (Adobe TrustMark / Meta Content Seal, incl. Lolly's own ?durable=1 mark)
+ * by driving the built dist in the scoped Chromium — the same on-device
+ * decode the /valid view runs. Needs the Tier-B setup (`lolly
+ * install-browser` + `npm run build:web`); everything else in this file
+ * stays DOM-free and browser-free.
  *
  * The same engine verifier that backs the web shell's /valid view
  * (engine/src/c2pa-verify.js): re-checks the credential a Lolly export embeds
@@ -23,6 +30,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { verifyC2pa, resolveVerdict, defaultTrustAnchors } from '@lolly/engine';
+import type { DeepScanResult } from '@lolly-tools/node-shell/webshell-render';
 
 const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', YELLOW = '\x1b[33m', RESET = '\x1b[0m';
 const tty = process.stdout.isTTY;
@@ -36,7 +44,7 @@ const clean = (v: unknown) => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g,
 
 export async function validateCli(
   filePath: string,
-  { json = false, trustAnchors }: { json?: boolean; trustAnchors?: string[] } = {},
+  { json = false, deep = false, trustAnchors }: { json?: boolean; deep?: boolean; trustAnchors?: string[] } = {},
 ): Promise<number> {
   // Repeatable --trust-anchor=<root.pem>: the entry point's flag parser keeps
   // only the LAST occurrence of a flag, so the raw argv is scanned here
@@ -57,8 +65,27 @@ export async function validateCli(
   const bytes = new Uint8Array(await readFile(filePath));
   const report = await verifyC2pa(bytes, { trustAnchors: anchors });
 
+  // --deep: the neural pixel-watermark scan (Adobe TrustMark / Meta Content Seal,
+  // incl. Lolly's ?durable=1 mark) — the /valid view's own decode, driven headlessly
+  // via the Tier-B browser. Advisory: it never changes the exit code (a durable mark
+  // is a soft binding, and its ABSENCE is never proof — per the detectors' policy).
+  let deepScan: DeepScanResult | null = null;
+  let deepErr: string | null = null;
+  if (deep) {
+    try {
+      const [{ deepScanViaWebShell, closeWebShell }, { closeBrowser }] = await Promise.all([
+        import('@lolly-tools/node-shell/webshell-render'),
+        import('@lolly-tools/node-shell/browsers'),
+      ]);
+      try { deepScan = (await deepScanViaWebShell([filePath]))[0] ?? null; }
+      finally { await closeWebShell(); await closeBrowser(); }
+    } catch (err) {
+      deepErr = (err as Error).message;
+    }
+  }
+
   if (json) {
-    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(deep ? { ...report, deepScan, ...(deepErr ? { deepScanError: deepErr } : {}) } : report, null, 2) + '\n');
   } else {
     // The engine's shared verdict ladder (resolveVerdict, engine/src/
     // c2pa-verdict.ts) replaces the private ladder + expired-only re-derivation
@@ -122,6 +149,22 @@ export async function validateCli(
     for (const chk of report.checks) {
       const mark = chk.ok ? paint(GREEN, '✓') : chk.code === 'signingCredential.untrusted' ? paint(DIM, 'ℹ') : paint(RED, '✕');
       process.stdout.write(`  ${mark} ${clean(chk.code)} ${paint(DIM, '— ' + clean(chk.explanation))}\n`);
+    }
+    if (deepErr) {
+      process.stdout.write(paint(YELLOW, `! Deep scan unavailable`) + paint(DIM, ` — ${clean(deepErr)}\n`));
+    } else if (deepScan) {
+      if (!deepScan.scanned) {
+        process.stdout.write(paint(DIM, `○ Deep scan: this file type can't be pixel-scanned (raster/video only)\n`));
+      } else if (deepScan.lollyDurable) {
+        process.stdout.write(paint(GREEN, '✦ Lolly durable mark decoded from the pixels') + paint(DIM,
+          ' — a TrustMark-format identifier that survives metadata stripping and re-encoding\n'));
+      } else {
+        if (deepScan.trustmark) process.stdout.write(paint(YELLOW, '~ Adobe TrustMark watermark decoded') + paint(DIM, ' — embedded by another TrustMark-aware tool\n'));
+        if (deepScan.contentSeal) process.stdout.write(paint(YELLOW, '~ Meta Content Seal watermark decoded\n'));
+        if (!deepScan.trustmark && !deepScan.contentSeal) {
+          process.stdout.write(paint(DIM, '○ Deep scan: no pixel watermark decoded (not proof of absence)\n'));
+        }
+      }
     }
   }
 
