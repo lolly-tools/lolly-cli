@@ -53,8 +53,18 @@ export async function renderRaster(opts: {
 
   // Tier B — drive the built web shell in the scoped Chromium; capture the exact bytes
   // its own export path downloads (one render path, no drift vs web/desktop).
-  const { renderViaWebShell } = await import('@lolly-tools/node-shell/webshell-render');
   const query = serializeUrlState(runtime.getModel() as never);
+  const MOTION = ['gif', 'apng', 'webm', 'mp4'];
+  // PROTOTYPE opt-in: real Playwright screenshots instead of dom-to-image for the
+  // frame-by-frame capture (see renderVideoViaScreenshot's doc comment). Motion
+  // formats only, and only when explicitly requested — every other case, and the
+  // default with this unset, still goes through renderViaWebShell unchanged.
+  if (MOTION.includes(fmt) && process.env.LOLLY_VIDEO_CAPTURE === 'screenshot') {
+    const { renderVideoViaScreenshot } = await import('@lolly-tools/node-shell/webshell-render');
+    const { bytes } = await renderVideoViaScreenshot(manifest.id, query, fmt, dims);
+    return { bytes, usedBrowser: true };
+  }
+  const { renderViaWebShell } = await import('@lolly-tools/node-shell/webshell-render');
   const { bytes } = await renderViaWebShell(manifest.id, query, fmt, dims);
   return { bytes, usedBrowser: true };
 }
