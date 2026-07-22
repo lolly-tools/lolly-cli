@@ -325,7 +325,13 @@ export async function createCliBridge(
         return new Blob([opts.dataText], { type: opts.dataMime ?? 'text/plain' });
       }
       if (format === 'html') {
-        return new Blob([node.outerHTML], { type: 'text/html' });
+        // Strip any template <script> (editor-runtime helpers — e.g. a canvas
+        // auto-resize hook) before serialising: the exported markup is static, and
+        // the web shell's HTML export (renderStaticHtml) does the same. Clone so the
+        // live node is left untouched.
+        const clone = node.cloneNode(true) as Element;
+        clone.querySelectorAll('script').forEach((el) => el.remove());
+        return new Blob([clone.outerHTML], { type: 'text/html' });
       }
       if (format === 'svg') {
         const svg = node.querySelector('svg') ?? node;
