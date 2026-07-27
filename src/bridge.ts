@@ -12,7 +12,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -182,6 +182,11 @@ export async function createCliBridge(
   // (same object the web bridge attaches, so shells can never drift).
   host.color = makeColorApi();
 
+  // Vector geometry (v1.64) — the geometry kernel behind SVG path-data strings.
+  // Pure engine math, attached verbatim (the SAME object the web bridge attaches),
+  // so a pen-tool hook computes identical geometry headlessly.
+  host.geom = makeGeomApi();
+
   // host.text — text-to-path (HarfBuzz WASM), the SAME shaping the web shell uses, so a
   // tool that outlines text via host.text renders identically in the terminal. Without
   // it, brand-lockup (and any host.text-in-hooks tool) throws in onInit and emits an
@@ -317,6 +322,36 @@ export async function createCliBridge(
   // browser engine (jsdom has no layout), so they're produced by the web shell
   // or the Tauri-bundled CLI (which ships a WebView) — a deliberate decision, not
   // a TODO: the node CLI stays dependency-light rather than bundling Chromium.
+/**
+ * The tool's OWN root `<svg>`, or null when the tool draws in HTML.
+ *
+ * The vector formats below (svg / emf / eps / dxf) are CLI-native only for tools whose
+ * template IS an `<svg>` — a browser-free vector path with no layout engine. The old
+ * test for that was `node.querySelector('svg')`, which finds ANY descendant, and that
+ * is wrong now that an HTML-layout tool can contain one: Layout Studio's vector path
+ * boxes emit an inline `<svg><path>` per shape, so a poster with one pen shape used to
+ * export as that ONE shape, with the artboard, the background and every other box
+ * silently dropped — a plausible-looking wrong file, which is worse than a refusal.
+ *
+ * So: descend only through wrappers that have exactly one drawable child (scripts and
+ * styles don't count — several native-svg tools ship a template script beside their
+ * `<svg>`). A container with two drawable children is a LAYOUT, not a wrapper, and the
+ * answer is null → the caller raises "needs a browser engine", which is the truth.
+ */
+const NON_DRAWABLE = new Set(['script', 'style', 'template', 'link', 'meta']);
+function rootSvgOf(node: Element | null): Element | null {
+  let cur: Element | null = node;
+  for (let depth = 0; cur && depth < 8; depth++) {
+    if (cur.tagName?.toLowerCase() === 'svg') return cur;
+    const kids = Array.from(cur.children).filter(
+      (el) => !NON_DRAWABLE.has(el.tagName.toLowerCase()),
+    );
+    if (kids.length !== 1) return null;
+    cur = kids[0] ?? null;
+  }
+  return null;
+}
+
   host.export = {
     async render(node: Element, format: string, opts: CliExportRenderOpts = {}): Promise<Blob> {
       // Data/text formats: the engine already hydrated the payload (JSON from the
@@ -334,9 +369,9 @@ export async function createCliBridge(
         return new Blob([clone.outerHTML], { type: 'text/html' });
       }
       if (format === 'svg') {
-        const svg = node.querySelector('svg') ?? node;
-        if (svg.tagName.toLowerCase() !== 'svg') {
-          throw new Error('SVG export requires an <svg> in the template');
+        const svg = rootSvgOf(node);
+        if (!svg) {
+          throw new Error('SVG export requires the template\'s root drawable to be an <svg> (HTML-layout tools need a browser engine — use the desktop app or the web shell)');
         }
         // Honour requested dimensions (incl. physical units like "210mm"): set
         // width/height in the unit and ensure a px viewBox so it scales.
@@ -362,7 +397,7 @@ export async function createCliBridge(
         // it joins svg as a CLI-native format for native-<svg> tools. Text must
         // already be outlined: the lean CLI has no host.text, so svgDomToIr throws
         // on any live <text> (the always-text-as-paths guard surfaced as an error).
-        const svg = node.querySelector('svg') ?? (node.tagName?.toLowerCase() === 'svg' ? node : null);
+        const svg = rootSvgOf(node);
         if (!svg) throw new Error('EMF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background });
         const bytes = emitEmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
@@ -373,7 +408,7 @@ export async function createCliBridge(
         // outlined upstream (svgDomToIr throws on live <text>, as the lean CLI
         // has no host.text), so the emitter writes no fonts. eps-cmyk is naive
         // DeviceCMYK (no embedded output intent), same as the web shell.
-        const svg = node.querySelector('svg') ?? (node.tagName?.toLowerCase() === 'svg' ? node : null);
+        const svg = rootSvgOf(node);
         if (!svg) throw new Error('EPS export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'EPS' });
         const text = emitEps(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi, cmyk: format === 'eps-cmyk', meta: opts.meta as { title?: string } | undefined });
@@ -383,7 +418,7 @@ export async function createCliBridge(
         // DXF is the same SVG-IR path as EMF/EPS — a fourth sink on svgDomToIr, so a
         // native-<svg> tool exports vector CAD DXF browser-free (no 150MB Chromium for
         // what is fundamentally text). Text is outlined upstream (host.text present).
-        const svg = node.querySelector('svg') ?? (node.tagName?.toLowerCase() === 'svg' ? node : null);
+        const svg = rootSvgOf(node);
         if (!svg) throw new Error('DXF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'DXF' });
         const { text } = emitDxf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
