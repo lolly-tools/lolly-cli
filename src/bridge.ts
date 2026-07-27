@@ -12,7 +12,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -202,6 +202,23 @@ export async function createCliBridge(
 
   host.assets = {
     async get(id) {
+      // A PROCEDURAL asset: `zzfxm:<seed>[:<style>]` names a song that is
+      // synthesised on demand, not a file the catalog stores. It resolves to
+      // ITSELF — url === id — exactly as the web bridge does, so a headless render
+      // of a project carries the same bed marker a browser render does. Without
+      // it the engine's resolveOne throws "Asset not in catalog", nulls the field
+      // before hooks run, and the bed silently disappears from the output.
+      // The CLI cannot synthesise the audio (no Web Audio), but dropping the ref
+      // would be a different document, not a smaller one.
+      if (isZzfxmRef(id)) {
+        const ref = parseZzfxmRef(id);
+        if (!ref) throw new Error(`Malformed procedural audio ref: ${id}`);
+        const canonical = formatZzfxmRef(ref);
+        return {
+          source: 'library', id: canonical, type: 'audio', format: 'zzfxm', url: canonical,
+          meta: { name: 'Generated music', generated: true, seed: ref.seed, ...(ref.style ? { style: ref.style } : {}) },
+        };
+      }
       // A presentation modifier can ride in the id, baked in at resolve time
       // (same contract as the web bridge). An id carries at most one:
       //   `<baseId>?theme=<themeId>`  — themable two-colour icon pairing
