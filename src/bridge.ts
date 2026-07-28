@@ -41,6 +41,9 @@ import { repoRoot } from '../../../packages/node-shell/src/repo-root.ts';
 // this file is inlined into the Vercel MCP function, where a bare @lolly-tools/node-shell
 // specifier would dangle. Lazily loads its WASM on first shape, so attaching it is free.
 import { createNodeTextAPI } from '../../../packages/node-shell/src/text.ts';
+// host.audio (WAV/ZzFXM decode + the engine's frame analysis). RELATIVE for the same
+// MCP-bundle reason; it pulls no codec and no WASM, so attaching it is free.
+import { createNodeAudioAPI } from '../../../packages/node-shell/src/audio.ts';
 // url-shot page capture (scoped Chromium). RELATIVE for the MCP bundle; its browser is
 // lazy-loaded, so importing it costs nothing until a capture actually runs.
 import { captureUrl } from '../../../packages/node-shell/src/url-capture.ts';
@@ -193,6 +196,14 @@ export async function createCliBridge(
   // empty SVG. Fonts resolve off disk under the repo root (see text.ts). Node-only fonts
   // are all sfnt; the WASM loads lazily on first shape.
   host.text = createNodeTextAPI({ repoRoot: REPO_ROOT });
+
+  // host.audio (v1.71) — the SAME per-frame analysis the web shell runs (the engine's
+  // analysePcm), so an audio-reactive tool draws identical frames headlessly. The
+  // decoder is what differs and it is narrow on purpose: WAV plus our own ZzFXM
+  // songs, with no shelling out to ffmpeg, so a headless render never silently
+  // depends on whatever binary is on PATH. Anything needing a platform codec (mp3,
+  // aac, opus) rejects by name — see packages/node-shell/src/audio.ts.
+  host.audio = createNodeAudioAPI({ repoRoot: REPO_ROOT });
 
   // host.net — allowlisted fetch for tools that declared the 'network' capability,
   // built per-invocation from the loaded manifest's network.allowlist (callers thread
