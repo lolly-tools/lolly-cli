@@ -24,7 +24,7 @@ import { assertRenderOk } from '@lolly-tools/node-shell/render-integrity';
 // url-shot: capture a live page via the scoped Chromium (shared with the TUI).
 import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
 import { createCliBridge, applyBrandVars } from './bridge.ts';
-import type { Profile, ExportOpts } from '../../../engine/src/bridge/host-v1.ts';
+import type { Profile, ExportOpts } from '@lolly-tools/core/host-v1';
 
 const REPO_ROOT = repoRoot();
 

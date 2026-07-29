@@ -16,17 +16,22 @@ import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf,
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
-} from '../../../engine/src/bridge/host-v1.ts';
+} from '@lolly-tools/core/host-v1';
 // PDF metadata inspect/strip is pure pdf-lib (no DOM), so the lean node CLI
 // shares the web shell's implementation rather than duplicating it.
 import { createPdfAPI } from '../../web/src/bridge/pdf.ts';
 // PPTX inspect/rebrand is engine primitives + fflate (plain JS) with the XML
-// parser injected, so the CLI shares the web impl and supplies jsdom's DOMParser.
-import { createPptxAPI } from '../../web/src/bridge/pptx.ts';
+// parser injected, so the CLI shares one impl with the web shell and supplies
+// jsdom's DOMParser. RELATIVE import on purpose, same reason as repo-root below:
+// this file is inlined into the Vercel MCP function by scripts/build-mcp-fn.ts,
+// whose esbuild config leaves bare package specifiers external, so a
+// `@lolly-tools/node-shell/pptx` import would dangle in the bundle.
+import { createPptxAPI } from '../../../packages/node-shell/src/pptx.ts';
 // host.net allowlisted fetch is DOM-free too (global fetch + TransformStream, both
-// Node ≥18 globals), so the CLI shares the web module verbatim — the prefix-match
-// rules and the 64 MB counting-stream cap can never drift between shells.
-import { createNetAPI } from '../../web/src/bridge/net.ts';
+// Node ≥18 globals), so every shell builds it from one module — the prefix-match
+// rules and the 64 MB counting-stream cap can never drift. RELATIVE for the same
+// MCP-bundle reason as above.
+import { createNetAPI } from '../../../packages/node-shell/src/net.ts';
 // SVG→EMF IR walk is DOM-light (attribute reads), so it runs under jsdom for
 // native-SVG tools — the same "no layout engine" constraint as the svg branch.
 import { svgDomToIr } from '../../web/src/bridge/svg-ir.ts';
