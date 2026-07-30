@@ -427,9 +427,10 @@ function rootSvgOf(node: Element | null): Element | null {
       }
       if (format === 'emf') {
         // EMF is pure bytes built from SVG primitives — no rasteriser needed, so
-        // it joins svg as a CLI-native format for native-<svg> tools. Text must
-        // already be outlined: the lean CLI has no host.text, so svgDomToIr throws
-        // on any live <text> (the always-text-as-paths guard surfaced as an error).
+        // it joins svg as a CLI-native format for native-<svg> tools. Live <text>
+        // is outlined in the walk: host.text (createNodeTextAPI above) shapes any
+        // run whose family resolves to an sfnt on disk (e.g. the Outfit platform
+        // face); an unresolvable family throws (the always-text-as-paths guard).
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('EMF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background });
@@ -438,9 +439,10 @@ function rootSvgOf(node: Element | null): Element | null {
       }
       if (format === 'eps' || format === 'eps-cmyk') {
         // EPS is vector PostScript built from the same SVG IR as EMF — text is
-        // outlined upstream (svgDomToIr throws on live <text>, as the lean CLI
-        // has no host.text), so the emitter writes no fonts. eps-cmyk is naive
-        // DeviceCMYK (no embedded output intent), same as the web shell.
+        // outlined upstream (svgDomToIr shapes live <text> via host.text; an
+        // unresolvable family throws), so the emitter writes no fonts. eps-cmyk
+        // is naive DeviceCMYK: no embedded output intent (same as the web shell)
+        // and, unlike the web shell, no brand cmykPalette overrides.
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('EPS export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'EPS' });
