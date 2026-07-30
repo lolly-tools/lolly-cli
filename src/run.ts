@@ -11,7 +11,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang, parseDataRows } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang, parseDataRows, parseTableText } from '@lolly/engine';
 import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
@@ -146,6 +146,22 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
     const { rows, truncated } = parseDataRows(text, { fields });
     values[input.id] = rows as (typeof values)[string];
     process.stderr.write(`✓ Imported ${rows.length} row${rows.length === 1 ? '' : 's'} into --${input.id} from ${dataPath}${truncated ? ' (row cap reached)' : ''}\n`);
+  }
+
+  // `--<tableInput>-data=table.csv` fills a `table` input from a CSV/TSV/Markdown
+  // file (first row = headings) — the headless twin of the sidebar's spreadsheet
+  // paste. The inline form (--data=<compact-or-JSON string>) already works via
+  // parseUrlState; this flag is for real files. Read from `params` (not a
+  // declared input, so parseUrlState ignores it).
+  for (const input of tool.manifest.inputs ?? []) {
+    if (input.type !== 'table') continue;
+    const dataPath = params[`${input.id}-data`];
+    if (!dataPath) continue;
+    const text = await readFile(resolve(process.cwd(), dataPath), 'utf8');
+    const parsed = parseTableText(text);
+    if (!parsed) throw new Error(`--${input.id}-data: ${dataPath} does not parse as a CSV/TSV/Markdown table`);
+    values[input.id] = parsed as (typeof values)[string];
+    process.stderr.write(`✓ Imported ${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} × ${parsed.columns.length} columns into --${input.id} from ${dataPath}\n`);
   }
 
   // --share/--link: print a shareable lolly.tools link for the current inputs instead of
