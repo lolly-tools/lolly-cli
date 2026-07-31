@@ -23,7 +23,7 @@ import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 import { assertRenderOk } from '@lolly-tools/node-shell/render-integrity';
 // Fail loud, part two: refuse bytes that are demonstrably not the requested container
 // (headless Chromium has no AV1 encoder, so an --export=avif used to write PNG).
-import { assertFormatBytes } from '@lolly-tools/node-shell/format-sniff';
+import { assertFormatBytes, sniffFormat, formatAllows } from '@lolly-tools/node-shell/format-sniff';
 import { needsBrowserTier } from '@lolly-tools/node-shell/browser-tier';
 // url-shot: capture a live page via the scoped Chromium (shared with the TUI).
 import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
@@ -380,6 +380,27 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // exportFile hook (bytes in → bytes out), not by rendering a DOM node. They
   // don't use a render format at all — short-circuit before the format checks.
   if (tool.manifest.hooks?.exportFile) {
+    // `--export=` on a transform is REFUSED, not ignored. A transform's output container
+    // follows its INPUT file (and whatever the tool's own inputs say); the reserved
+    // `format` param never reaches the hook. Accepting it printed
+    // `✓ … → clean.png` for a file that held JPEG bytes and exited 0 — a mislabelled
+    // file is worse than an error, and this is the last release in which the flag can
+    // change meaning.
+    if (format ?? paramFormat) {
+      const asked = format ?? paramFormat;
+      const spelled = format ? `--export=${asked}` : `--format=${asked}`;
+      // If the tool declares its OWN `format` input (convert-image does), the reserved
+      // param shadowed it and the fix is the explicit namespace, not "drop the flag".
+      const ownFormat = (tool.manifest.inputs ?? []).some(i => i.id === 'format');
+      throw usageError(
+        `"${toolId}" is an on-device transform (file in → file out), so ${spelled} has nothing to act on: ` +
+        'the output container follows the file you gave it, and the reserved export format never reaches the tool. ' +
+        (ownFormat
+          ? `"${toolId}" has its own \`format\` input — write it as --input.format=${asked}.`
+          : 'Drop the flag, or use one of the tool\'s own inputs if it offers a conversion.'),
+        'UNSUPPORTED_FLAG',
+      );
+    }
     const runtime = await createRuntime(tool, host, values);
     const fileIn = (tool.manifest.inputs ?? []).find(i => i.type === 'file');
     let tier = 'node';
@@ -422,6 +443,16 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // used for it only when you do.
     const dest = outputPath || (filenameFlag ? resolve(process.cwd(), filenameFlag) : null);
     if (dest) {
+      // The name you chose vs the bytes you got. A transform cannot change the container
+      // to match the name, so this is a WARNING, not a refusal — but it must be said:
+      // `strip-data --source=photo.jpg --output=clean.png` writes JPEG bytes, and
+      // silence there is how a mislabelled file gets emailed on.
+      const destExt = extname(dest).slice(1).toLowerCase();
+      const actual = destExt ? sniffFormat(buf) : null;
+      if (actual && !formatAllows(destExt, actual)) {
+        warn('OUTPUT_EXTENSION_MISMATCH',
+          `--output=${dest} is named ".${destExt}" but a transform cannot change the container: these bytes are ${actual}. The file is written as ${actual} under the name you gave.`);
+      }
       await writeFile(dest, buf);
       // One-line result summary (input→output delta + the tool's a11y summary) so the
       // headless path reports what a transform did, not just a byte count. Matches the
@@ -459,11 +490,35 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // --output extension; otherwise a manifest-flagged matchExportFormat input
   // defaults to its uploaded file's own format (a dropped JPEG → jpg — same
   // rule as the web shell); otherwise the tool's first declared format.
-  const targetFormat =
-    format ?? paramFormat ??
-    (outputPath ? formatFromOutput(outputPath, tool.manifest.render.formats) : null) ??
+  const explicitFormat = format ?? paramFormat ?? null;
+  const fromOutputExt = outputPath ? formatFromOutput(outputPath, tool.manifest.render.formats) : null;
+  // An --output EXTENSION that names no format this tool declares is a REFUSAL, not a
+  // shrug. It used to fall through to the tool's first declared format, so
+  // `lolly meeting-planner --output=times.csv` wrote 113 KB of PNG into a file called
+  // .csv and exited 0 — the exact silent-substitution class `--export=csv` already
+  // refuses with exit 2. Two spellings of one request must not disagree.
+  //
+  // Only when NO explicit format was given: `--export=svg --output=notes.txt` is a
+  // deliberate "this format, that filename" and stays legal, because the caller said
+  // which format they meant.
+  if (!explicitFormat && outputPath && !fromOutputExt) {
+    const ext = extname(outputPath).slice(1).toLowerCase();
+    if (ext) {
+      throw usageError(
+        `--output=${outputPath} asks for ".${ext}", which "${toolId}" does not produce. ` +
+        `Supported: ${tool.manifest.render.formats.join(', ')}. ` +
+        `Name one with --export=<format> if you meant to write it under that filename anyway.`,
+        'UNDECLARED_FORMAT',
+      );
+    }
+  }
+  const targetFormat = resolveJpegSynonym(
+    explicitFormat ??
+    fromOutputExt ??
     matchedExportFormat(tool.manifest, runtime.getModel() as Array<{ id: string; value: unknown }>) ??
-    tool.manifest.render.formats[0]!;
+    tool.manifest.render.formats[0]!,
+    tool.manifest.render.formats,
+  );
 
   // The PRO float formats (exr / .hdr) are admitted for ANY tool, declared or not.
   // plans/deeprichpixels.md §10 rules out per-tool depth declarations — depth is an
@@ -676,6 +731,18 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       warn('HTML_FALLBACK',
         `"${targetFormat}" could not be produced here (${firstLine((e as Error).message)}). ` +
         `--html-fallback was given, so HTML was written instead${outputPath ? ` — to ${outputPath}, NOT the name you asked for` : ''}.`);
+    }
+
+    // `--text=live` on the BROWSER tier is a no-op, and used to be a silent one: the flag
+    // is applied by this shell's own DOM-free exporter, and the browser tier is driven
+    // through a URL, where there is no reserved param for it (see RESERVED in
+    // engine/src/url-mode.ts). A run that escalated therefore came back outlined while
+    // the caller had asked for editable <text>, byte-identical to a run without the flag.
+    // Say so rather than let the flag look honoured.
+    if (text === 'live' && webShellExport) {
+      warn('TEXT_LIVE_IGNORED',
+        `--text=live did not apply: "${targetFormat}" for this tool was produced by the browser render tier, which outlines text unconditionally. ` +
+        'The file is the same as one exported without the flag.');
     }
 
     // Runs the svg branch could not outline. Reported once per run, in the exporter's
@@ -1063,6 +1130,25 @@ function isCaptureTool(manifest: { capabilities?: string[] }): boolean {
 // Infer an export format from an --output filename's extension, but only when it
 // names a format the tool actually declares — otherwise return null so the
 // caller falls back to formats[0]. (.jpeg normalises to the canonical 'jpg'.)
+/**
+ * `jpg` and `jpeg` are ONE format with two spellings, and the catalog is split down the
+ * middle (28 manifests declare `jpg`, 6 declare `jpeg`). Without this, `--export=jpg`
+ * exited 2 on `qr-code` and `--export=jpeg` exited 2 on `d3` — the same flag succeeding
+ * or failing depending on which tool you named, with `--help` advertising only `jpg` and
+ * the docs advertising both. `--output=x.jpeg` already resolved the synonym, so the two
+ * halves of one shell disagreed too.
+ *
+ * The alias resolves to the tool's OWN declared spelling, so nothing downstream (the
+ * format gate, the raster tier, the format-byte sniff) has to learn about it. An
+ * asymmetric alias is a name, and names freeze at GA — this is the window.
+ */
+export function resolveJpegSynonym(format: string, formats: readonly string[]): string {
+  const f = format.toLowerCase();
+  if (formats.includes(format)) return format;
+  const alias = f === 'jpeg' ? 'jpg' : f === 'jpg' ? 'jpeg' : null;
+  return alias && formats.includes(alias) ? alias : format;
+}
+
 export function formatFromOutput(path: string, formats: string[]): string | null {
   const ext = extname(path).slice(1).toLowerCase();
   if (!ext) return null;

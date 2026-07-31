@@ -41,6 +41,8 @@ Subcommands:
   lolly assets [query] [--type=raster]     list catalog asset ids usable as asset inputs
   lolly batch <rows.csv> [--out-dir=./out] render one file per CSV row (--keep-going)
   lolly preflight <tool-id|url> [--json]   count and check an export without rendering it
+                        [--strict]         (exit 4 when a check says no; 2 if it could
+                                            not run. Report goes to stdout — redirect it)
   lolly smoke [--only=a,b] [--format=svg]  render every catalog tool at defaults (CI gate)
   lolly validate <file…> [--json] [--deep] check Content Credentials (--deep adds the
                                            neural pixel-watermark scan; needs a browser)
@@ -62,6 +64,8 @@ Global flags (valid on every command):
 Export options:
   --output=<path>          write here (\`-\` = stdout; the extension can pick the format)
   --export=<fmt>           format: svg, png, jpg, webp, pdf, emf, eps, dxf, json, csv, …
+                           (jpg and jpeg are one format; either spelling works on any
+                           tool, whichever one its manifest happens to declare)
   --filename=<name>        name the output file in the working directory (no --output)
   --width= --height=       size, in --unit= (px default, or mm/cm/in/pt) at --dpi= (300)
   --text=outline|live      vector text as paths (default) or editable <text>
@@ -112,6 +116,30 @@ const args = argv.slice(2);
 // Rule 1 of §5.3, enforced before any command runs: stdout is the payload. A tool hook
 // calling console.log would otherwise write into the middle of an exported PNG.
 keepConsoleOffStdout();
+// A downstream reader that closes early (`lolly list | head -1`) makes the next write to
+// stdout raise EPIPE. Nothing subscribed to the stream's 'error' event, so that surfaced
+// as Node's raw "Unhandled 'error' event" stack trace and exit 1 — which under
+// `set -o pipefail` fails the whole pipeline for an ordinary `| head`. A closed pipe is
+// not a failure of this run: it ends quietly, keeping whatever exit code the work had.
+// Swallowed rather than exited on, because §0/B3 forbids process.exit() around stdout —
+// the event loop drains and the process ends with the code the work already set. Every
+// other stdout error still reaches the caller through writeOut's rejected promise.
+process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+  if (err?.code !== 'EPIPE') throw err;
+});
+// §5.2 says a `--json` run puts a complete envelope on stdout on EVERY path. The parse
+// below can itself throw (a bare value-flag is exit 2), and `beginCommand` had not run
+// yet, so `lolly validate f.png --json --require > r.json` left a zero-byte file and an
+// agent reading stdout got EOF — the exact failure the envelope was written to remove.
+// A raw argv scan is enough: `--json` has one spelling and no bare-value trap. The
+// command name is re-set accurately by main() once the parse succeeds; this pre-set is
+// only the fallback for a failure that happens before that.
+const RAW_VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke']);
+const rawFirst = args.find(a => !a.startsWith('-'));
+beginCommand(
+  RAW_VERBS.has(rawFirst ?? '') ? rawFirst! : 'lolly',
+  args.some(a => a === '--json' || /^--json=(?!0$|false$|off$|no$)/i.test(a)),
+);
 // The stderr writer the error printer uses, captured BEFORE --quiet can replace it: a
 // quiet run still prints errors, and it must not print them into a sink.
 const writeErr = process.stderr.write.bind(process.stderr);

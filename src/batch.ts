@@ -12,7 +12,7 @@
  */
 import { readFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { parseBatchCsv, batchCsvTemplate, loadTool } from '@lolly/engine';
+import { parseBatchCsv, batchCsvTemplateWithNotes, loadTool } from '@lolly/engine';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 import { runToolCli } from './run.ts';
 import { EXIT, exitCodeFor, usageError } from './exit-codes.ts';
@@ -36,7 +36,16 @@ export async function batchTemplateCli(toolIds: string[], opts: { json?: boolean
   if (!tools.length) {
     throw usageError('No known tools given. Usage: lolly batch --template=qr-code,chart-creator', 'UNKNOWN_TOOL');
   }
-  const csv = batchCsvTemplate(tools);
+  const { csv, shadowedInputs } = batchCsvTemplateWithNotes(tools);
+  if (shadowedInputs.length) {
+    // A batch row has no `--input.<id>=` namespace — the header IS the namespace — so an
+    // input whose id is a reserved output column simply cannot be set from a batch. Say
+    // it here rather than emit two columns with the same name and let the second quietly
+    // win (a grid whose two `width` cells read 600 and 300 rendered at 300).
+    warn('BATCH_COLUMN_SHADOWED',
+      `${shadowedInputs.map(i => `"${i}"`).join(', ')} ${shadowedInputs.length === 1 ? 'is an input' : 'are inputs'} whose name a reserved output column already owns, so ` +
+      `${shadowedInputs.length === 1 ? 'it is' : 'they are'} not in this grid and cannot be set per row. Render those with \`lolly run\` and --input.<id>=<value>.`);
+  }
   if (opts.json) {
     // The CSV stays a single string rather than being re-modelled as rows: it is a
     // starter FILE, and a consumer's next move is to write it to disk unchanged.

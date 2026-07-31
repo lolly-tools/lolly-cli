@@ -617,7 +617,11 @@ function rootSvgOf(node: Element | null): Element | null {
         });
         return new Blob([bytes as BlobPart], { type: mime || deepFormatMime(format) });
       }
-      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use a text/data format (html, svg, emf, eps, dxf, json, csv, ics, vcf), a pro float format (exr, hdr — with hdr=1), or run the Tauri-bundled CLI for raster/pdf/zip.`);
+      // The remedy list is NODE_FORMATS itself, not a hand-kept copy of it: the two
+      // drifted, so the message offered formats the engine no longer claims and omitted
+      // `md`, which works. A remedy a reader cannot act on is worse than no remedy.
+      const { NODE_FORMATS } = await import('../../../packages/node-shell/src/raster.ts');
+      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use one of the browser-free formats (${NODE_FORMATS.join(', ')}), a pro float format (exr, hdr — with hdr=1), install the render tier with \`lolly install-browser\`, or run the Tauri-bundled CLI for raster/pdf/zip.`);
     },
     async download() {
       throw new Error('CLI cannot trigger a browser download — pipe the blob to a file via --output');

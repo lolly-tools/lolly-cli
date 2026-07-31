@@ -17,16 +17,18 @@
  * Preflighting settings other than the ones a render would use is worthless, so
  * everything downstream of `parseUrlState` is the same code path `runToolCli`
  * walks: the same `zx=` decrypt, the same `z=` expansion, the same reserved-param
- * parse, the same format resolution. Its own flags are three (`--json`,
- * `--strict`, `--out=`), and two more are RECOGNISED SO THEY CAN BE REFUSED
- * (`--rate-card`, `--batch`) rather than silently dropped by the flag parser.
+ * parse, the same format resolution, the same `--input.<id>=` namespace and the
+ * same reserved-flag-shadows-an-input warning. Its own flags are TWO (`--json`,
+ * `--strict`); three more are RECOGNISED SO THEY CAN BE REFUSED (`--rate-card`,
+ * `--batch`, `--out`) rather than silently dropped by the flag parser.
  *
  * ## What it does NOT do
  *
  * It never renders and never exports. It loads the tool and builds the input
  * model (which runs `onInit`, the same as `--share` does) so the checks see the
- * values a render would see; nothing is rasterised, no browser is launched, no
- * file is written unless `--out=` asked for one.
+ * values a render would see; nothing is rasterised, no browser is launched, and
+ * NO FILE IS EVER WRITTEN. The report goes to stdout; redirect it if you want it
+ * on disk.
  *
  * There is no currency, no rate, no price and no monetary concept in this file,
  * and none may be added. Preflight counts; it does not cost.
@@ -46,18 +48,23 @@
  *            finding: a finding is data and belongs in the artifact.
  *
  *   0 — preflight ran; no `error` findings.
- *   1 — preflight ran; at least one `error` (or, with `--strict`, a `warn`).
- *   2 — preflight COULD NOT RUN (unknown tool, unloadable manifest, a `zx=` link
- *       with no password, a refused flag). Exiting 0 when the check never
- *       happened is the one failure mode that makes a CI gate worthless.
+ *   4 — REFUSED: preflight ran and a protective check said no. At least one
+ *       `error` finding (or, with `--strict`, a `warn`). It is 4 and not 1
+ *       because §5.1 reserves 1 for "it ran and FAILED": preflight did not fail,
+ *       it worked and reported a problem — the same event `validate` reports with
+ *       4. Two check commands must not return opposite codes for one class of
+ *       finding, or a CI wrapper branching on `$?` sends a print error down the
+ *       "lolly crashed, retry" path.
+ *   2 — USAGE: preflight COULD NOT RUN (unknown tool, unloadable manifest, a
+ *       `zx=` link with no password, a refused flag). Exiting 0 when the check
+ *       never happened is the one failure mode that makes a CI gate worthless.
+ *
+ * Nothing here returns 1: a preflight that ran is never a "failed run".
  *
  * A count that cannot be TAKEN is never non-zero: "needs the artwork mounted",
  * "no brand palette resolved", "no physical page size" are `info` findings with a
  * machine-readable `needs`, and they exit 0 permanently.
  */
-
-import { writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 
 import {
   createRuntime, buildInputModel, expandQuery, hasEncryptedState,
@@ -69,12 +76,14 @@ import type {
 } from '@lolly/engine';
 import { matchedExportFormat } from '@lolly-tools/node-shell/raster';
 import {
-  decryptLinkQuery, formatFromOutput, loadToolOrThrow, quietVirtualConsole,
-  readProfile, readToolFile, unknownFlags,
+  decryptLinkQuery, explicitInputValues, formatFromOutput, loadToolOrThrow,
+  quietVirtualConsole, readProfile, readToolFile, resolveJpegSynonym, shadowedInputs,
+  unknownFlags,
 } from './run.ts';
 import { createCliBridge } from './bridge.ts';
 import { isOn } from './args.ts';
 import { useColor } from './output.ts';
+import { EXIT } from './exit-codes.ts';
 
 const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', YELLOW = '\x1b[33m', RESET = '\x1b[0m';
 // NO_COLOR is honoured alongside the isTTY check, same as validate.ts (contract §1.5).
@@ -100,7 +109,7 @@ const clean = (v: unknown): string => String(v).replace(/[\u0000-\u001f\u007f-\u
 
 /** This subcommand's own flags. Removed from the params before they are read as
  *  URL state, so they are never mistaken for tool inputs. */
-const OWN_FLAGS = ['json', 'strict', 'out'] as const;
+const OWN_FLAGS = ['json', 'strict'] as const;
 
 /**
  * Flags that are RECOGNISED so they can be refused.
@@ -114,6 +123,12 @@ const REFUSED: Record<string, string> = {
   'rate-card': '--rate-card is not implemented (preflight counts only; there are no rates and no money).',
   rates: '--rates is not implemented (preflight counts only; there are no rates and no money).',
   batch: 'batch preflight is not implemented yet. Run `lolly preflight <tool-id>` for a single job.',
+  // Removed before GA rather than frozen. It was a THIRD spelling for "where output
+  // goes" (`run --output`, `batch --out-dir`, `preflight --out`), and it split one
+  // invocation across two destinations: the report went to the file, but the exit-2
+  // refusal envelope went to stdout, so the run whose diagnosis you needed left no
+  // file behind. stdout carries the report on every path; the shell already does.
+  out: '--out was removed before GA. preflight writes its report to stdout on every path — redirect it: `lolly preflight <tool> --json > report.json`.',
 };
 
 class UsageError extends Error {}
@@ -162,7 +177,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
 
   const positional = rest.find(a => !a.startsWith('--'));
   if (!positional) {
-    throw new UsageError('usage: lolly preflight <tool-id|url> [--export=fmt] [--json] [--strict] [--out=file]');
+    throw new UsageError('usage: lolly preflight <tool-id|url> [--export=fmt] [--json] [--strict]');
   }
   if (/\.(csv|tsv)$/i.test(positional)) {
     throw new UsageError('batch preflight is not implemented yet. Run `lolly preflight <tool-id>` for a single job.');
@@ -173,7 +188,6 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   // `--strict=false` a strict run.
   const json = isOn(flags.json);
   const strict = isOn(flags.strict);
-  const outPath = flags.out;
 
   // A pasted lolly.tools link is a fully-configured job: parse it into a toolId +
   // query and preflight it as if the query were --flags. Any --flag after the URL
@@ -212,9 +226,29 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
 
   // Collector-side caveats. They go BOTH to stderr (so an interactive reader sees
   // them beside the report) and into the artifact as `info` findings, because
-  // `--out=report.json` discards stderr entirely and a caveat that lives only in a
-  // stream is a caveat that does not travel with the copy it qualifies.
+  // `lolly preflight … --json > report.json` discards stderr entirely and a caveat
+  // that lives only in a stream is a caveat that does not travel with the copy it
+  // qualifies.
   const caveats: Finding[] = [];
+
+  // A reserved flag that shadows one of THIS tool's declared inputs never reaches the
+  // input — the same warning the render path prints (contract B7). Without it
+  // `preflight chart-creator --width=333 --unit=mm` reported a clean 1080px job and the
+  // render that followed was a different artefact, which is precisely the
+  // silently-wrong-number class this subcommand exists to prevent.
+  for (const k of shadowedInputs(params, tool.manifest)) {
+    process.stderr.write(
+      `Warning: --${clean(k)} is a reserved export flag AND an input of "${clean(tool.manifest.id)}". ` +
+      `The value went to the export, not to the input. Use --input.${clean(k)}=<value> to set the input.\n`,
+    );
+    caveats.push({
+      id: 'collect.reserved-flag-shadows-input',
+      severity: 'info',
+      needs: 'not-carried',
+      message: `--${k} is a reserved export flag and also an input of this tool. It was preflighted as the export setting, not as the input. Use --input.${k}=<value> for the input.`,
+      evidence: { flag: k },
+    });
+  }
 
   const unknown = unknownFlags(params, tool.manifest);
   if (unknown.length) {
@@ -241,6 +275,11 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   const query = await expandQuery(rawQuery);
   const state = parseUrlState(query, tool.manifest);
   const { values, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, cuts, hdr } = state;
+  // `--input.<id>=<value>` — the explicit input namespace (contract B7), applied here
+  // exactly as `runToolCli` applies it, and for the same reason: preflighting a job the
+  // render would not produce is worse than not preflighting at all. It is the permanent,
+  // frozen escape hatch, so it has to work on the command that checks the escape hatch.
+  Object.assign(values, explicitInputValues(params, tool.manifest));
 
   // ── The model. `createRuntime` runs onInit, so this is the POST-INIT model and a
   // paginate count is exact rather than a ceiling. If onInit cannot run headlessly
@@ -269,11 +308,13 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   }
 
   // ── The format, resolved exactly as the render path resolves it.
-  const format =
+  const format = resolveJpegSynonym(
     (flags.export || undefined) ?? state.format ??
     (flags.output ? formatFromOutput(flags.output, tool.manifest.render.formats) : null) ??
     matchedExportFormat(tool.manifest, runtimeModel) ??
-    tool.manifest.render.formats[0] ?? '';
+    tool.manifest.render.formats[0] ?? '',
+    tool.manifest.render.formats,
+  );
 
   // ── The palette. `host.tokens.colors()` is called DIRECTLY: a throw and an empty
   // list both map to `not-resolved`, because a count taken from a fallback palette
@@ -322,24 +363,19 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
 
   const errors = report.findings.filter(f => f.severity === 'error').length;
   const warns = report.findings.filter(f => f.severity === 'warn').length;
-  const exit = errors > 0 || (strict && warns > 0) ? 1 : 0;
+  // REFUSED (4), not FAILED (1): the check ran and said no. See the header.
+  const exit = errors > 0 || (strict && warns > 0) ? EXIT.REFUSED : EXIT.OK;
 
   // One envelope, every command (contract §5.2). preflight used to emit its own
   // `$format: lolly-preflight-*` document, which made it the second machine shape in a
   // CLI whose whole machine promise is that there is one. The report itself is
   // unchanged — it is now `result` inside the envelope.
   if (json) {
-    const { envelope, emitResult } = await import('./envelope.ts');
-    if (outPath) {
-      await writeFile(resolve(process.cwd(), outPath), JSON.stringify(await envelope(report, exit === 0), null, 2) + '\n');
-    } else {
-      await emitResult(report, exit);
-    }
+    const { emitResult } = await import('./envelope.ts');
+    await emitResult(report, exit);
     return exit;
   }
-  const text = humanReport(report, job, tool.manifest);
-  if (outPath) await writeFile(resolve(process.cwd(), outPath), text);
-  else process.stdout.write(text);
+  process.stdout.write(humanReport(report, job, tool.manifest));
   return exit;
 }
 

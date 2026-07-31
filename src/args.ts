@@ -38,8 +38,17 @@ export const REPEATABLE = new Set(['trust-anchor']);
 export const VALUE_FLAGS = new Set([
   'output', 'export', 'format', 'width', 'height', 'unit', 'dpi', 'depth',
   'bleed', 'marks', 'cuts', 'lang', 'filename', 'slot', 'z', 'zx',
-  'press-profile', 'user-profile', 'link-password', 'text', 'trust-anchor',
-  'out-dir', 'out', 'only', 'type', 'require', 'template', 'password',
+  // `profile` is listed BESIDE `press-profile` because it is its frozen alias (§B1),
+  // and a flag's two spellings must refuse the same things. Without it a bare
+  // `--profile` parsed to "1" and handed the CMYK export a press condition literally
+  // named "1", while `--press-profile` alone exited 2. Same flag, opposite answers.
+  'press-profile', 'profile', 'user-profile', 'link-password', 'text', 'trust-anchor',
+  // NOTE: no bare `out`. `preflight --out=` was removed before GA (§1.4) — one shell,
+  // one spelling for "where output goes" per shape: `--output` for a single file,
+  // `--out-dir` for a directory of them. Leaving `out` here also made a bare `--out`
+  // a usage error on EVERY command, so a tool declaring a boolean input `out` could
+  // never be set with the documented bare-flag form.
+  'out-dir', 'only', 'type', 'require', 'template', 'password',
 ]);
 
 /** Subcommand words a tool id may never take (contract §1.1). `completion` is reserved

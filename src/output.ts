@@ -84,7 +84,13 @@ export function strictExitCode(): number | null {
  */
 export function writeOut(data: string | Uint8Array): Promise<void> {
   return new Promise((resolve, reject) => {
-    process.stdout.write(data as string, (err) => (err ? reject(err) : resolve()));
+    process.stdout.write(data as string, (err) => {
+      // EPIPE is the reader closing early (`lolly … | head -1`), not a failed run: the
+      // payload was produced, nobody is listening any more. Resolving keeps the exit
+      // code the work earned instead of promoting an ordinary `| head` to FAILED.
+      if (err && (err as NodeJS.ErrnoException).code !== 'EPIPE') reject(err);
+      else resolve();
+    });
   });
 }
 
