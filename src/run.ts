@@ -11,7 +11,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang, parseDataRows, parseTableText } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED } from '@lolly/engine';
 import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
@@ -21,6 +21,9 @@ import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 // Fail loud: never write a degenerate file + exit 0 when the render silently failed.
 import { assertRenderOk } from '@lolly-tools/node-shell/render-integrity';
+// Fail loud, part two: refuse bytes that are demonstrably not the requested container
+// (headless Chromium has no AV1 encoder, so an --export=avif used to write PNG).
+import { assertFormatBytes } from '@lolly-tools/node-shell/format-sniff';
 // url-shot: capture a live page via the scoped Chromium (shared with the TUI).
 import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
 import { createCliBridge, applyBrandVars } from './bridge.ts';
@@ -38,17 +41,40 @@ interface RunToolCliArgs {
   /** --verify: for a transform tool, print a per-file line saying the tool's own
    *  export checks ran and none failed. A failed check throws (exit 1) either way. */
   verify?: boolean;
+  /** --html-fallback: OPT IN to receiving an HTML artifact when the requested format
+   *  cannot be produced here. Off by default — silently substituting the format was
+   *  the single worst defect in this shell (see the export section below). */
+  htmlFallback?: boolean;
 }
 
 /**
- * A transform hook that cannot run in the Node host says so in its thrown sentence
- * (redact: "needs a browser canvas" / "not available in this app"). Those exports
- * are re-run in the real web shell (Tier B) instead of failing — a rebuild-the-pixels
- * utility has no honest jsdom path. A verification failure reads nothing like this,
- * so a failed gate still fails loudly.
+ * Does this failure mean "the Node host can't do this, a real browser can"?
+ *
+ * TWO signals, in order of reliability:
+ *
+ *   1. A TYPED SENTINEL on the error — `err.code === 'NEEDS_BROWSER'`, or a truthy
+ *      `err.needsBrowser`. This is the supported way for a tool hook to say it, and
+ *      the only one that isn't coupled to prose. Tool hooks ship as DATA from a
+ *      different repository, so wording there and control flow here must not be the
+ *      same thing: `convert-image` fails hard today purely because its hook says
+ *      "isn't available in this app" where the old regex expected "not available".
+ *   2. The prose regex, kept as a compatibility fallback for every already-shipped
+ *      tool. Broadened to accept the "isn't"/"is not" split that caused that bug.
+ *
+ * A verification failure reads like neither, so a failed export gate still fails loudly.
+ *
+ * Accepts an Error or a bare message string (the string form is what the older tests
+ * and the MCP twin call it with).
  */
-export function needsBrowserTier(message: string): boolean {
-  return /browser canvas|not available in this app|needs a browser|requires a browser/i.test(message);
+export function needsBrowserTier(err: unknown): boolean {
+  if (err && typeof err === 'object') {
+    const e = err as { code?: unknown; needsBrowser?: unknown };
+    if (e.code === 'NEEDS_BROWSER' || e.needsBrowser === true) return true;
+  }
+  const message = typeof err === 'string' ? err : (err as { message?: unknown } | null)?.message;
+  if (typeof message !== 'string') return false;
+  //  "needs a browser canvas" · "is not / isn't / isn’t available in this app" · "needs a browser"
+  return /browser canvas|n(?:['’]|o)t available in this app|needs a browser|requires a browser/i.test(message);
 }
 
 /** ExportOpts plus the two CLI-local extensions run.ts threads to the bridge:
@@ -65,7 +91,7 @@ type CliExportOpts = ExportOpts & {
  *  `palette` (its brand primaries), not the full var set applyBrandVars writes. */
 const BRAND_HDR_SLOTS = ['primary', 'secondary'] as const;
 
-export async function runToolCli({ toolId, params, outputPath, format, share, verify }: RunToolCliArgs): Promise<void> {
+export async function runToolCli({ toolId, params, outputPath, format, share, verify, htmlFallback }: RunToolCliArgs): Promise<void> {
   // Lazy import — jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>');
@@ -95,10 +121,31 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // rejects, breaking the one-render-path parity for network-capable tools.
   const host = await createCliBridge({ dom, profile, networkAllowlist: tool.manifest.network?.allowlist });
 
-  // Expand a packed `z=…` param back into a plain query first — the CLI is URL mode
-  // under a different transport, so a packed share link must run identically here
+  // Warn about flags this tool has no use for. The docs promise flags are validated
+  // against the manifest; they were simply swallowed, so a typo (`--urll=…`) rendered
+  // defaults with no hint that the value went nowhere.
+  warnUnknownFlags(params, tool.manifest);
+
+  // A password-protected share link (`zx=…`) carries the WHOLE state encrypted. The web
+  // shell prompts for the password; the CLI takes it as a flag. Decrypt BEFORE expandQuery,
+  // exactly as the web shell does, so everything downstream sees a plain query.
+  //
+  // NO SILENT DEFAULTS. `zx` is a reserved param, so parseUrlState ignores it — which meant
+  // a missing or wrong password rendered the tool's DEFAULTS and exited 0. A wrong document
+  // that looks right is the worst thing this shell can emit, so both cases now throw.
+  let rawQuery = new URLSearchParams(params).toString();
+  if (hasEncryptedState(rawQuery)) {
+    // `--password` is url-mode's PDF open-password. When it is the only password on the
+    // command line and the link is encrypted, it is obviously meant for the link, so it is
+    // consumed here and removed from the query rather than also locking an exported PDF.
+    // `--link-password` is the unambiguous form and always wins.
+    const explicit = params['link-password'];
+    rawQuery = await decryptLinkQuery(rawQuery, explicit ?? params.password, explicit === undefined);
+  }
+  // Expand a packed `z=…` param back into a plain query — the CLI is URL mode under a
+  // different transport, so a packed share link must run identically here
   // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
-  const query = await expandQuery(new URLSearchParams(params).toString());
+  const query = await expandQuery(rawQuery);
   const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr } = parseUrlState(
     query,
     tool.manifest,
@@ -221,7 +268,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     } catch (e) {
       const msg = (e as Error).message;
       const ref = fileIn ? (values[fileIn.id] as { name?: string; mime?: string; bytes?: Uint8Array } | undefined) : undefined;
-      if (!needsBrowserTier(msg) || !fileIn || !ref?.bytes) throw e;
+      if (!needsBrowserTier(e) || !fileIn || !ref?.bytes) throw e;
       // The utility rebuilds real pixels (canvas / PDF page render), which the Node
       // host cannot do. Re-run the SAME hook in the scoped browser driving the built
       // web shell — the tool's export gate runs there, on these bytes. When no browser
@@ -362,64 +409,119 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // --password= sets the standard PDF's open-password (basic lock).
     if (targetFormat === 'pdf' && password) exportOpts.password = password;
 
+    const dims = {
+      width: width ?? undefined, height: height ?? undefined, unit: unit ?? undefined, dpi: dpi ?? undefined,
+      ...(password ? { password } : {}),
+      ...(bleed ? { bleed } : {}),
+      ...(marksRaw ? { marks: marksRaw } : {}),
+      ...(imprint ? { imprint: true } : {}),
+      ...(durable ? { durable: true } : {}),
+      ...(pressProfile ? { pressProfile } : {}),
+      // Forward the c2pa setting so the browser tier stamps it (single authority); the
+      // Node post-stamp below is skipped when the browser ran, avoiding a double-stamp.
+      ...(c2pa != null ? { c2pa: c2pa.on, c2paDays: c2pa.days ?? undefined } : {}),
+    };
+    const viaRaster = async (): Promise<Buffer> => {
+      const { renderRaster } = await import('./raster.ts');
+      const res = await renderRaster({ runtime, dom, manifest: tool.manifest, format: targetFormat, dims });
+      const bytes = Buffer.from(res.bytes);
+      usedBrowser = res.usedBrowser;
+      webShellExport = res.usedBrowser; // Tier B == the web shell; it owns c2pa for that path
+      // Tier A (resvg) rasterises THIS runtime's own SVG, so a swallowed hook failure
+      // yields a blank raster — gate it. Tier B re-renders in a real browser whose host
+      // has the capability, so hookErrors don't describe those bytes; renderViaWebShell
+      // already throws if the browser produced nothing.
+      if (!usedBrowser) assertRenderOk({ hookErrors: runtime.hookErrors, format: targetFormat, bytes });
+      return bytes;
+    };
+
+    // Print prep on a path that cannot apply it. bleed/marks geometry lives in the web
+    // shell (Tier B reads ?bleed/?marks off the export URL); the DOM-free engine export
+    // has nowhere to put it, so asking for it here used to be a byte-for-byte no-op with
+    // no warning. Refuse instead — for a print job a silently un-bled file is exactly the
+    // kind of plausible wrong output that gets discovered at the press.
+    if ((bleed || marksRaw) && NODE_FORMATS.includes(targetFormat.toLowerCase()) && !VECTOR_ESCALATABLE.has(targetFormat.toLowerCase())) {
+      throw new Error(
+        `--bleed/--marks cannot be applied to "${targetFormat}" here: print geometry is added by the full render tier, ` +
+        `and "${targetFormat}" is produced directly by the engine, which has nowhere to put a bleed box or crop marks. ` +
+        'Export pdf, pdf-cmyk, cmyk-tiff or png (which route through that tier), or drop the flags. No file was written.',
+      );
+    }
+
+    // What the DOM-free attempt said, kept so a failed escalation can report BOTH halves
+    // (why there is no browser-free path, and why the browser tier could not step in).
+    let domFreeError: Error | null = null;
     try {
-      // Engine-native / data formats (svg/emf/eps/dxf + html/json/csv/ics/vcf) render DOM-free
-      // through the bridge. Raster/PDF/video route to raster.ts: Tier A (resvg, no browser)
-      // for PNG from an SVG-native tool, else Tier B (the scoped Chromium driving the built
-      // web shell). `usedBrowser` tells us to tear the browser + server down before exit.
-      if (NODE_FORMATS.includes(targetFormat.toLowerCase())) {
-        const blob = await runtime.export(canvas, targetFormat, exportOpts);
-        buf = Buffer.from(await blob.arrayBuffer());
-        // The DOM-free render is this runtime's own output — a swallowed onInit failure
-        // (e.g. an unavailable capability) yields an empty file. Refuse to write it.
-        assertRenderOk({ hookErrors: runtime.hookErrors, format: targetFormat, bytes: buf });
-      } else {
-        const { renderRaster } = await import('./raster.ts');
-        const res = await renderRaster({
-          runtime, dom, manifest: tool.manifest, format: targetFormat,
-          dims: {
-            width: width ?? undefined, height: height ?? undefined, unit: unit ?? undefined, dpi: dpi ?? undefined,
-            ...(password ? { password } : {}),
-            ...(bleed ? { bleed } : {}),
-            ...(marksRaw ? { marks: marksRaw } : {}),
-            ...(imprint ? { imprint: true } : {}),
-            ...(durable ? { durable: true } : {}),
-            ...(pressProfile ? { pressProfile } : {}),
-            // Forward the c2pa setting so the browser tier stamps it (single authority); the
-            // Node post-stamp below is skipped when the browser ran, avoiding a double-stamp.
-            ...(c2pa != null ? { c2pa: c2pa.on, c2paDays: c2pa.days ?? undefined } : {}),
-          },
-        });
-        buf = Buffer.from(res.bytes);
-        usedBrowser = res.usedBrowser;
-        webShellExport = res.usedBrowser; // Tier B == the web shell; it owns c2pa for that path
-        // Tier A (resvg) rasterises THIS runtime's own SVG, so a swallowed hook failure
-        // yields a blank raster — gate it. Tier B re-renders in a real browser whose host
-        // has the capability, so hookErrors don't describe those bytes; renderViaWebShell
-        // already throws if the browser produced nothing.
-        if (!usedBrowser) assertRenderOk({ hookErrors: runtime.hookErrors, format: targetFormat, bytes: buf });
+      try {
+        // Engine-native / data formats (svg/emf/eps/dxf + html/json/csv/ics/vcf) render DOM-free
+        // through the bridge. Raster/PDF/video route to raster.ts: Tier A (resvg, no browser)
+        // for PNG from an SVG-native tool, else Tier B (the scoped Chromium driving the built
+        // web shell). `usedBrowser` tells us to tear the browser + server down before exit.
+        const domFree = NODE_FORMATS.includes(targetFormat.toLowerCase());
+        // …EXCEPT: a vector format asked for WITH print prep has to start at the browser tier,
+        // because that is the only tier that can honour bleed/marks (see the refusal above).
+        const forceBrowser = domFree && !!(bleed || marksRaw);
+        if (domFree && !forceBrowser) {
+          const blob = await runtime.export(canvas, targetFormat, exportOpts);
+          buf = Buffer.from(await blob.arrayBuffer());
+          // The DOM-free render is this runtime's own output — a swallowed onInit failure
+          // (e.g. an unavailable capability) yields an empty file. Refuse to write it.
+          assertRenderOk({ hookErrors: runtime.hookErrors, format: targetFormat, bytes: buf });
+        } else {
+          buf = await viaRaster();
+        }
+      } catch (e) {
+        // ESCALATION, not substitution. svg/emf/eps/dxf sit in NODE_FORMATS, so an
+        // HTML-layout tool's "no root <svg>" used to end the story — even though the web
+        // shell's HTML→SVG walker produces real vector for exactly that case. Retry at the
+        // browser tier, the same way a raster format already does.
+        //
+        // The gate is a TYPE, not a phrase. The old fallback keyed on error prose and got
+        // it wrong in both directions; "needs a browser engine" (plural verb) does not even
+        // match needsBrowserTier's "needs a browser". So: escalate on any DOM-free failure
+        // EXCEPT a RenderIntegrityError, which means this runtime's own render is broken
+        // (a hook threw) and re-rendering it elsewhere would only launder the bug. If the
+        // browser tier can't run either, both halves are reported and nothing is written.
+        if (!VECTOR_ESCALATABLE.has(targetFormat.toLowerCase()) || (e as Error)?.name === 'RenderIntegrityError') throw e;
+        domFreeError = e as Error;
+        process.stderr.write(
+          `Note: "${targetFormat}" has no browser-free path for this tool (${firstLine(domFreeError.message)}). ` +
+          'Escalating to the browser render tier.\n',
+        );
+        buf = await viaRaster();
+        domFreeError = null;
       }
     } catch (e) {
-      // HTML-layout tools have no <svg> (svg/emf/eps/dxf throw), and Tier-B formats need a
-      // browser + a built web shell. When either is unavailable, fall back to writing HTML
-      // so an export ALWAYS yields an artifact — the exact graceful fallback the TUI ships.
-      // A genuine render failure (RenderIntegrityError: "render produced no usable output")
-      // does NOT match this signature, so it correctly rethrows and fails loud.
-      const msg = (e as Error).message;
-      if (finalFormat !== 'html' && /<svg>|requires an|browser engine|needs a browser|no built web shell|chromium/i.test(msg)) {
-        const blob = await runtime.export(canvas, 'html', {});
-        buf = Buffer.from(await blob.arrayBuffer());
-        assertRenderOk({ hookErrors: runtime.hookErrors, format: 'html', bytes: buf });
-        finalFormat = 'html';
-        webShellExport = false;
-        // Retarget --output to a .html name so the file's extension matches its content.
-        if (outputPath) outputPath = outputPath.replace(/\.[^./\\]+$/, '') + '.html';
-        process.stderr.write(`Note: "${targetFormat}" needs a browser engine here — wrote HTML instead (${msg.split('\n')[0]}).\n`);
-      } else {
-        throw e;
-      }
+      // THE FORMAT IS NOT PRODUCIBLE HERE.
+      //
+      // What this used to do: notice a browser-ish error message, export HTML instead,
+      // rename --output=aa.svg to aa.html, print a note, and EXIT 0. A pipeline that asked
+      // for PDF received HTML and had no way to know. That is the single worst outcome
+      // this shell can produce, so it is gone: the requested format either comes out or
+      // the run fails, with nothing written at the requested path.
+      //
+      // The HTML artifact is still available, but only when asked for by name
+      // (--html-fallback), because then the caller knows to expect it.
+      if (!htmlFallback || finalFormat === 'html') throw exportFailure(targetFormat, e as Error, domFreeError);
+      const blob = await runtime.export(canvas, 'html', {});
+      buf = Buffer.from(await blob.arrayBuffer());
+      assertRenderOk({ hookErrors: runtime.hookErrors, format: 'html', bytes: buf });
+      finalFormat = 'html';
+      webShellExport = false;
+      usedBrowser = false;
+      // Retarget --output to a .html name so the file's extension matches its content.
+      if (outputPath) outputPath = outputPath.replace(/\.[^./\\]+$/, '') + '.html';
+      process.stderr.write(
+        `Warning: "${targetFormat}" could not be produced here (${firstLine((e as Error).message)}). ` +
+        `--html-fallback was given, so HTML was written instead${outputPath ? ` — to ${outputPath}, NOT the name you asked for` : ''}.\n`,
+      );
     }
   }
+
+  // Refuse bytes that are demonstrably a different container from the one requested —
+  // the --export=avif that quietly wrote PNG. Runs before the C2PA stamp (which picks its
+  // embedder by format) and before anything is written.
+  assertFormatBytes(finalFormat, buf);
 
   // --c2pa[=7|30|90|365] stamps Content Credentials into the finished bytes —
   // URL mode's `c2pa` param under the CLI transport (same last-byte-operation
@@ -469,6 +571,114 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     ]);
     await Promise.all([closeBrowser(), closeWebShell()]);
   }
+}
+
+/**
+ * Vector formats that live in NODE_FORMATS (the DOM-free engine tries them first) but
+ * that the BROWSER tier can also produce — the web shell's HTML→SVG walker turns an
+ * HTML-layout tool into real vector, and its EMF/EPS/DXF emitters ride the same IR.
+ * So a DOM-free failure on one of these is a reason to escalate, not to refuse.
+ */
+const VECTOR_ESCALATABLE = new Set(['svg', 'emf', 'eps', 'eps-cmyk', 'dxf']);
+
+const firstLine = (s: string): string => String(s ?? '').split('\n')[0]!.trim();
+
+/**
+ * The refusal for "this format cannot be produced here".
+ *
+ * Names both halves when there are two (no browser-free path AND the browser tier could
+ * not step in), so the reader is not left guessing which piece is missing, and always
+ * ends with the concrete way out. The underlying errors already carry the actionable
+ * hints — `lolly install-browser` from browsers.ts, `npm run build:web` from
+ * webshell-render.ts — so they are quoted rather than paraphrased.
+ */
+export function exportFailure(format: string, failure: Error, domFreeError: Error | null): Error {
+  const parts = [`Cannot export "${format}".`];
+  if (domFreeError) parts.push(`No browser-free path: ${firstLine(domFreeError.message)}`);
+  parts.push(`${domFreeError ? 'And the full render tier is unavailable' : 'Reason'}: ${firstLine(failure.message)}`);
+  parts.push('No file was written. Pass --html-fallback if an HTML artifact under a .html name is genuinely useful to you.');
+  // A TYPED marker, not prose: `lolly smoke` (browser-free by budget rule) uses it to tell
+  // "this tool needs the render tier I am not allowed to launch" from a real render bug,
+  // without pattern-matching sentences. Same lesson as needsBrowserTier's sentinel.
+  const err = new Error(parts.join(' ')) as Error & { cause?: unknown; code?: string; format?: string };
+  err.cause = failure;
+  err.code = 'FORMAT_UNAVAILABLE';
+  err.format = format;
+  return err;
+}
+
+/** Flags this shell reads itself, on top of url-mode's RESERVED set. */
+const CLI_FLAGS = new Set(['press-profile', 'link-password', 'html-fallback', 'help', 'version']);
+
+/**
+ * Warn about `--flags` that match nothing — no declared input, no `urlKey` alias, no
+ * reserved param, no CLI flag. They were silently swallowed, so `--urll=https://…`
+ * rendered the tool's defaults and said nothing. A warning, not an error: url-mode is
+ * deliberately tolerant of extra params (a share link can carry view state a tool no
+ * longer declares), and turning that into an exit-1 would break working links.
+ */
+export function unknownFlags(
+  params: Record<string, string>,
+  manifest: { inputs?: Array<{ id: string; urlKey?: string; type?: string }> },
+): string[] {
+  const inputs = manifest.inputs ?? [];
+  const known = new Set<string>();
+  for (const i of inputs) {
+    known.add(i.id);
+    if (i.urlKey) known.add(i.urlKey);
+    known.add(`${i.id}-data`);          // --<blocks|table>-data=rows.csv
+  }
+  const prefixes = inputs.map(i => `${i.id}.`);   // --<vector>.<field>=<number>
+  return Object.keys(params).filter(
+    k => !known.has(k) && !RESERVED.has(k) && !CLI_FLAGS.has(k) && !prefixes.some(p => k.startsWith(p)),
+  );
+}
+
+function warnUnknownFlags(params: Record<string, string>, manifest: { id: string; inputs?: Array<{ id: string; urlKey?: string }> }): void {
+  const unknown = unknownFlags(params, manifest);
+  if (!unknown.length) return;
+  process.stderr.write(
+    `Warning: ${unknown.map(k => `--${k}`).join(', ')} ${unknown.length === 1 ? 'is not an input' : 'are not inputs'} of "${manifest.id}" ` +
+    `and had no effect. Run \`lolly ${manifest.id}\` to list its inputs.\n`,
+  );
+}
+
+/**
+ * Decrypt a `zx=…` share link into the plain query it protects.
+ *
+ * Throws — never returns the encrypted query — because the alternative is what this
+ * shell used to do: `zx` is reserved, parseUrlState ignores it, and the run quietly
+ * produced the tool at its DEFAULTS with exit 0. A pipeline cannot tell that apart from
+ * the real document. The two failure modes (no password, wrong password) are named
+ * separately so the caller knows which it is.
+ *
+ * Readable params riding alongside `zx` are re-appended after the decoded state, so
+ * on-visit flags still apply — the same rule expandQuery and the web shell follow.
+ */
+async function decryptLinkQuery(query: string, password: string | undefined, consumesPlainPassword: boolean): Promise<string> {
+  const sp = new URLSearchParams(query);
+  const token = sp.get(ENC_PARAM) ?? '';
+  if (!password) {
+    throw new Error(
+      'This is a password-protected link (zx=…) and no password was given. ' +
+      'Pass --link-password=<password>. Nothing was rendered: without the password the state cannot be read, ' +
+      'and rendering the tool at its defaults instead would hand you a different document under the right filename.',
+    );
+  }
+  const decoded = await unpackEncrypted(token, password);
+  if (decoded == null) {
+    throw new Error(
+      'Could not open the password-protected link (zx=…): the password is wrong, or the token is truncated or tampered with. ' +
+      'Nothing was rendered: falling back to the tool\'s defaults would hand you a different document under the right filename.',
+    );
+  }
+  const extras: string[] = [];
+  sp.forEach((v, k) => {
+    if (k === ENC_PARAM) return;
+    if (consumesPlainPassword && k === 'password') return;   // it was the LINK password, not a PDF lock
+    extras.push(v === '' ? encodeURIComponent(k) : `${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  });
+  return extras.length ? `${decoded}&${extras.join('&')}` : decoded;
 }
 
 // Load a tool, turning a missing tool dir (ENOENT on tool.json) into a clean, THROWN

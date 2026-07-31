@@ -18,6 +18,12 @@
  *      of an undeclared format, but html still exercises load → hydrate → hooks →
  *      assertRenderOk, which is what smoke is for (the established headless fallback).
  *
+ * Three outcomes, not two. A tool whose first Node-native format is svg but whose
+ * template is an HTML layout has no browser-free vector path, and smoke may not launch
+ * the tier that does — that lands in its OWN `~` bucket (rendered as html, hooks
+ * checked), never as a ✓ for the format it could not produce. It does not fail the gate,
+ * because it is a statement about smoke's budget, not about the tool.
+ *
  * Tools that legitimately cannot render headlessly are SKIPPED with a reason, never
  * failed: transform tools (hooks.exportFile — file in → bytes out, nothing to render
  * at defaults) and tools gated on a live-capture capability (camera/microphone/screen/
@@ -112,6 +118,9 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
   let ok = 0;
   let failed = 0;
   let skipped = 0;
+  /** Rendered as html because the tool has no browser-free path to its own first
+   *  Node-native format. Its own bucket: not a pass for that format, not a bug. */
+  let layout = 0;
 
   for (const id of ids) {
     const manifest = JSON.parse(await readFile(join(REPO_ROOT, 'tools', id, 'tool.json'), 'utf8')) as SmokeManifest;
@@ -144,16 +153,41 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
       }
       capture.restore();
 
-      // runToolCli's browser-unavailable fallback retargets the file to .html (an
-      // HTML-layout tool asked for svg, say) — report the format that was written.
-      const htmlPath = outputPath.replace(/\.[^./\\]+$/, '') + '.html';
-      const finalPath = existsSync(outputPath) ? outputPath : htmlPath;
-      const wroteFmt = finalPath === outputPath ? (fmt ?? 'html') : `${fmt}→html`;
-      const bytes = (await stat(finalPath)).size;
+      // The requested file, at the requested path, or it did not pass.
+      if (!existsSync(outputPath)) {
+        throw new Error(`no ${fmt ?? 'html'} was written (the render produced no file at the requested path)`);
+      }
+      const bytes = (await stat(outputPath)).size;
       ok++;
-      print(`✓ ${id.padEnd(idWidth)} ${wroteFmt.padEnd(9)} ${bytes.toLocaleString()} B  ${Date.now() - t0}ms\n`);
+      print(`✓ ${id.padEnd(idWidth)} ${(fmt ?? 'html').padEnd(9)} ${bytes.toLocaleString()} B  ${Date.now() - t0}ms\n`);
     } catch (e) {
       capture.restore();
+      // FORMAT_UNAVAILABLE: an HTML-layout tool whose first Node-native format is svg. It
+      // has no browser-free vector path, and smoke's budget rule forbids launching the
+      // render tier that does — so this says nothing about whether the tool renders.
+      //
+      // What it must NOT do is what it did before: the old code accepted runToolCli's
+      // silent svg→html substitution and printed `✓ filter-halftone svg->html 761 B`, so
+      // a fallback scored identically to a real vector render and the gate was worthless
+      // for exactly the tools it most needed to cover. Now the HTML render is smoke's own
+      // deliberate choice (renderHtmlHeadless — still load → hydrate → hooks →
+      // assertRenderOk, which is what smoke is for) and it is reported in its OWN bucket,
+      // never as a ✓. A hook failure inside that render is still a hard ✗ below.
+      if ((e as { code?: string }).code === 'FORMAT_UNAVAILABLE') {
+        const htmlPath = outputPath.replace(/\.[^./\\]+$/, '') + '.html';
+        const retry = captureStdio();
+        try {
+          await renderHtmlHeadless(id, htmlPath);
+          retry.restore();
+          layout++;
+          const bytes = (await stat(htmlPath)).size;
+          print(`~ ${id.padEnd(idWidth)} ${`${fmt}:html`.padEnd(9)} ${bytes.toLocaleString()} B  ${Date.now() - t0}ms  (layout tool: no browser-free ${fmt}; hooks ok)\n`);
+          continue;
+        } catch (inner) {
+          retry.restore();
+          e = inner;
+        }
+      }
       failed++;
       const msg = ((e as Error).message ?? String(e)).split('\n')[0];
       print(`✗ ${id.padEnd(idWidth)} ${(fmt ?? 'html').padEnd(9)} ${msg}\n`);
@@ -163,7 +197,10 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
   }
 
   const secs = ((Date.now() - started) / 1000).toFixed(1);
-  print(`\nsmoke: ${ok} ✓  ${failed} ✗  ${skipped} skipped  (${ids.length} tools, ${secs}s) — outputs in ${outDir}\n`);
+  print(
+    `\nsmoke: ${ok} ✓  ${failed} ✗  ${layout} ~ (layout tools rendered as html)  ${skipped} skipped  ` +
+    `(${ids.length} tools, ${secs}s) — outputs in ${outDir}\n`,
+  );
   return failed ? 1 : 0;
 }
 

@@ -3,31 +3,9 @@
 /**
  * lolly CLI
  *
- * Usage:
- *   lolly                                    # list tools
- *   lolly <tool-id>                          # show inputs for a tool
- *   lolly <tool-id> --foo=bar                # run, write to stdout
- *   lolly <tool-id> --foo=bar --output=f.svg # run, write to file
- *   lolly <tool-id> --foo=bar --share        # print a shareable lolly.tools link (no render)
- *   lolly <tool-id> --foo=bar --export=svg   # explicit format
- *   lolly redact --source=./f.pdf --bars=1,40,60,200,24 --output=./out.pdf --verify
- *                                            # file utilities: one instruction string, any file
- *                                            # (--verify prints a per-file line when no check failed)
- *   lolly <tool-id> --foo=bar --c2pa=30      # stamp Content Credentials
- *                                                 # (7|30|90|365-day ephemeral cert; =off forces off)
- *   lolly <tool-id> --export=pdf --bleed=3mm --marks=crop,reg,bars  # print prep (pdf/pdf-cmyk/cmyk-tiff)
- *   lolly <tool-id> --export=png --imprint   # embed the durable Lolly pixel watermark (raster)
- *   lolly <tool-id> --export=png --durable=1 # embed the durable Content Credential (neural
- *                                                 # TrustMark mark; survives metadata stripping — Tier B)
- *   lolly <tool-id> --export=pdf-cmyk --press-profile=fogra39       # CMYK press condition
- *                                                 # (NB: --profile is the user-profile FILE, not the press condition)
- *   lolly <tool-id> --export=png             # raster: no browser for SVG-native tools
- *   lolly install-browser                    # one-time Chromium download for png/jpg/pdf/video
- *                                                 # of HTML-layout tools (Tier B); needs `npm run build:web`
- *   lolly validate <file> [--json] [--trust-anchor=<root.pem>]  # check Content Credentials
- *   lolly validate <file> --deep             # + neural pixel-watermark scan (TrustMark /
- *                                                 # Content Seal / Lolly durable mark; Tier B)
- *   lolly smoke [--only=a,b] [--format=svg]  # render every catalog tool at defaults (CI gate)
+ * The usage text below is the REAL one: USAGE is printed by `lolly --help`. It used to
+ * be a comment nobody could see from a terminal, and `--help` / `--version` were
+ * unrecognised (they fell through to "Tool not found: --help").
  *
  * Architectural note: this CLI is URL mode under a different transport.
  * --foo=bar argv pairs become the same input values the web shell would
@@ -36,14 +14,85 @@
  */
 
 import { argv, exit } from 'node:process';
+import { readFile } from 'node:fs/promises';
 import { parseToolUrl, normalizeLang } from '@lolly/engine';
 import { runToolCli, listToolsCli, showToolInputsCli, listAssetsCli } from '../src/run.ts';
+
+const USAGE = `lolly — constraint-first asset generation from the terminal.
+
+Usage:
+  lolly                                    list tools
+  lolly <tool-id>                          show a tool's inputs
+  lolly <tool-id> --foo=bar                run, write to stdout
+  lolly <tool-id> --foo=bar --output=f.svg run, write to a file
+  lolly <tool-id> --foo=bar --export=svg   explicit format
+  lolly <tool-id> --foo=bar --share        print a shareable lolly.tools link (no render)
+  lolly <https://lolly.tools/#/tool/…>     run a pasted link; later --flags override it
+
+Subcommands:
+  lolly assets [query] [--type=raster]     list catalog asset ids usable as asset inputs
+  lolly batch <rows.csv> [--out-dir=./out] render one file per CSV row (--keep-going)
+  lolly smoke [--only=a,b] [--format=svg]  render every catalog tool at defaults (CI gate)
+  lolly validate <file> [--json] [--deep]  check Content Credentials (--deep adds the
+                                           neural pixel-watermark scan; needs a browser)
+  lolly install-browser [--with-deps]      one-time Chromium download for the full render
+                                           tier (also needs \`npm run build:web\`)
+
+Export options:
+  --output=<path>          write here (the extension can pick the format)
+  --export=<fmt>           format: svg, png, jpg, webp, pdf, emf, eps, dxf, json, csv, …
+  --width= --height=       size, in --unit= (px default, or mm/cm/in/pt) at --dpi= (300)
+  --html-fallback          OPT IN: if the requested format cannot be produced here, write
+                           HTML under a .html name instead of failing. Off by default —
+                           without it a format that cannot be produced is an error, never
+                           a different file under the name you asked for.
+  --bleed=3mm --marks=crop,reg,bars        print prep (routes through the full render tier)
+  --press-profile=fogra39                  CMYK press condition for pdf-cmyk / cmyk-tiff
+                           (NB: --profile is the user-profile JSON FILE, not the press
+                           condition — they are different flags on purpose)
+  --imprint                embed the durable Lolly pixel watermark (raster)
+  --durable=1              embed the durable Content Credential (neural TrustMark)
+  --c2pa[=7|30|90|365]     stamp Content Credentials (=off forces off)
+  --password=<pw>          PDF open-password
+  --depth=8|16|float       requested bits per channel; --hdr=1 for the float view transform
+
+Link options:
+  --z=<token>              a packed share link's state
+  --zx=<token>             a PASSWORD-PROTECTED share link's state; needs
+  --link-password=<pw>     …this. A missing or wrong password is an error, never a
+                           silent render of the tool's defaults.
+
+Other:
+  --profile=<file.json>    pre-fill bindToProfile inputs from a user-profile JSON file
+  --lang=<xx>              use a tool's manifest translation sidecar
+  --verify                 for a file utility: print a per-file line when no check failed
+  -h, --help               this text
+  -v, --version            print the CLI + engine version
+
+Examples:
+  lolly qr-code --url=https://suse.com --output=qr.svg
+  lolly qr-code --url=https://suse.com --export=png > qr.png
+  lolly redact --source=./f.pdf --bars=1,40,60,200,24 --output=./out.pdf --verify
+`;
 
 const args = argv.slice(2);
 
 try {
   if (args.length === 0) {
     await listToolsCli();
+    exit(0);
+  }
+
+  // --help / -h / --version / -v, before anything treats the token as a tool id (which is
+  // what used to happen: `lolly --help` printed "Tool not found: --help").
+  if (args.some(a => a === '--help' || a === '-h' || a === 'help')) {
+    process.stdout.write(USAGE);
+    exit(0);
+  }
+  if (args.some(a => a === '--version' || a === '-v')) {
+    const { ENGINE_VERSION } = await import('@lolly/engine');
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+    process.stdout.write(`lolly ${pkg.version} (engine ${ENGINE_VERSION})\n`);
     exit(0);
   }
 
@@ -119,14 +168,14 @@ try {
       merged['press-profile'] ??= merged.profile;
       delete merged.profile;
     }
-    const { output, export: fmt, share: urlShare, link: urlLink, verify: urlVerify, ...params } = merged;
+    const { output, export: fmt, share: urlShare, link: urlLink, verify: urlVerify, 'html-fallback': urlHtmlFallback, ...params } = merged;
     process.stderr.write(`→ ${ref.toolId}${ref.format ? ` (${ref.format})` : ''} from URL\n`);
     // In URL mode `export` is a bare PRESENCE flag ("auto-download on open") — the web
     // Share dialog's default link emits `…&format=png&export`, so URLSearchParams gives
     // export=''. That empty string is NOT a format: coalesce it to undefined so the URL's
     // own `format=` param (kept in `params`, read by runToolCli) or the path-segment
     // format wins. An explicit CLI `--export=svg` is non-empty and still overrides.
-    await runToolCli({ toolId: ref.toolId, params, outputPath: output, format: (fmt || undefined) ?? ref.format ?? undefined, share: urlShare !== undefined || urlLink !== undefined, verify: urlVerify !== undefined });
+    await runToolCli({ toolId: ref.toolId, params, outputPath: output, format: (fmt || undefined) ?? ref.format ?? undefined, share: urlShare !== undefined || urlLink !== undefined, verify: urlVerify !== undefined, htmlFallback: isOn(urlHtmlFallback) });
     exit(0);
   }
 
@@ -142,8 +191,8 @@ try {
     exit(0);
   }
 
-  const { output, export: format, share, link, verify, ...params } = flags;
-  await runToolCli({ toolId, params, outputPath: output, format, share: share !== undefined || link !== undefined, verify: verify !== undefined });
+  const { output, export: format, share, link, verify, 'html-fallback': htmlFallback, ...params } = flags;
+  await runToolCli({ toolId, params, outputPath: output, format, share: share !== undefined || link !== undefined, verify: verify !== undefined, htmlFallback: isOn(htmlFallback) });
 } catch (e) {
   const err = e as { message?: string; validationErrors?: Array<{ path: string; message: string }>; stack?: string };
   process.stderr.write(`Error: ${err.message}\n`);
@@ -154,6 +203,11 @@ try {
   }
   if (process.env.DEBUG) process.stderr.write((err.stack as string) + '\n');
   exit(1);
+}
+
+/** A bare `--flag` parses to '1'; `--flag=false|0|off` turns it back off. */
+function isOn(v: string | undefined): boolean {
+  return v !== undefined && !/^(0|false|off|no)$/i.test(v);
 }
 
 function parseArgs(rest: string[]): Record<string, string> {

@@ -43,7 +43,13 @@ export async function renderRaster(opts: {
   // durable-credential (TrustMark) request also falls through: resvg can't embed either
   // mark, so the web shell's imprintCanvas / durableEmbedCanvas must do it (exportUrl
   // carries ?imprint=1 / ?durable=1 from the dims).
-  if (fmt === 'png' && !dims.imprint && !dims.durable) {
+  //
+  // PRINT PREP FALLS THROUGH TOO. bleed/marks geometry is computed by the web shell
+  // (exportUrl forwards ?bleed/?marks); resvg is handed the tool's own SVG and knows
+  // nothing about a bleed box or crop marks, so Tier A used to accept the flags and
+  // produce bytes IDENTICAL to a run without them — no marks, no warning, exit 0. The
+  // tier that can honour the request is the one that must run it.
+  if (fmt === 'png' && !dims.imprint && !dims.durable && !dims.bleed && !dims.marks) {
     const svg = await tryRenderSvg(runtime, dom);
     if (svg) {
       const { width, height } = pxDims(dims, manifest);

@@ -52,6 +52,10 @@ import { createNodeAudioAPI } from '../../../packages/node-shell/src/audio.ts';
 // url-shot page capture (scoped Chromium). RELATIVE for the MCP bundle; its browser is
 // lazy-loaded, so importing it costs nothing until a capture actually runs.
 import { captureUrl } from '../../../packages/node-shell/src/url-capture.ts';
+// host.images (decode/resize/encode via sharp). RELATIVE for the same MCP-bundle reason;
+// it resolves sharp lazily and returns null when it isn't installed, so importing it is
+// free and a lean install simply leaves host.images undefined.
+import { createNodeImagesAPI } from '../../../packages/node-shell/src/images.ts';
 const REPO_ROOT = repoRoot();
 
 /** One format entry inside a catalog asset record (catalog/assets/index.json). */
@@ -214,6 +218,14 @@ export async function createCliBridge(
   // depends on whatever binary is on PATH. Anything needing a platform codec (mp3,
   // aac, opus) rejects by name — see packages/node-shell/src/audio.ts.
   host.audio = createNodeAudioAPI({ repoRoot: REPO_ROOT });
+
+  // host.images — decode/resize/encode, backed by sharp (native codecs; reads HEIC/AVIF/
+  // TIFF, writes the web-safe three). Without it a converter tool like convert-image can
+  // only throw, which is what the CLI used to do. ATTACHED ONLY IF sharp resolves: the
+  // contract is optional and tools feature-detect it, so absent is a defined state and
+  // strictly better than a present-but-throwing stub.
+  const images = createNodeImagesAPI();
+  if (images) host.images = images;
 
   // host.net — allowlisted fetch for tools that declared the 'network' capability,
   // built per-invocation from the loaded manifest's network.allowlist (callers thread
