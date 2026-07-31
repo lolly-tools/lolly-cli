@@ -15,13 +15,15 @@ import { join, resolve } from 'node:path';
 import { parseBatchCsv, batchCsvTemplate, loadTool } from '@lolly/engine';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 import { runToolCli } from './run.ts';
+import { EXIT, exitCodeFor, usageError } from './exit-codes.ts';
+import { warn } from './output.ts';
 
 const REPO_ROOT = repoRoot();
 const fetchFile = (p: string): Promise<string> => readFile(join(REPO_ROOT, 'tools', p), 'utf8');
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'out';
 
 /** Print a starter CSV grid for the given tool ids (their input columns + reserved). */
-export async function batchTemplateCli(toolIds: string[]): Promise<void> {
+export async function batchTemplateCli(toolIds: string[], opts: { json?: boolean } = {}): Promise<void> {
   const tools: Array<{ id: string; inputs: Array<{ id: string }> }> = [];
   for (const raw of toolIds) {
     const id = raw.trim();
@@ -29,19 +31,58 @@ export async function batchTemplateCli(toolIds: string[]): Promise<void> {
     try {
       const t = await loadTool(id, fetchFile);
       tools.push({ id: t.manifest.id, inputs: (t.manifest.inputs ?? []).map(i => ({ id: i.id })) });
-    } catch { process.stderr.write(`Warning: unknown tool "${id}" — skipped.\n`); }
+    } catch { warn('UNKNOWN_TOOL', `unknown tool "${id}" — skipped.`); }
   }
-  if (!tools.length) throw new Error('No known tools given. Usage: lolly batch --template=qr-code,chart-creator');
-  process.stdout.write(batchCsvTemplate(tools));
+  if (!tools.length) {
+    throw usageError('No known tools given. Usage: lolly batch --template=qr-code,chart-creator', 'UNKNOWN_TOOL');
+  }
+  const csv = batchCsvTemplate(tools);
+  if (opts.json) {
+    // The CSV stays a single string rather than being re-modelled as rows: it is a
+    // starter FILE, and a consumer's next move is to write it to disk unchanged.
+    const { emitResult } = await import('./envelope.ts');
+    await emitResult({ csv, tools: tools.map(t => ({ id: t.id, columns: t.inputs.map(i => i.id) })) });
+    return;
+  }
+  process.stdout.write(csv);
 }
 
-/** Render every row of a CSV/TSV into `outDir`. Returns a process exit code. */
-export async function runBatchCli(csvPath: string, opts: { outDir: string; keepGoing?: boolean }): Promise<number> {
-  const text = await readFile(resolve(process.cwd(), csvPath), 'utf8');
+/**
+ * Render every row of a CSV/TSV into `outDir`. Returns a process exit code.
+ *
+ * The code is the WORST row's code, not a flat 1 (contract B13): a batch where one row
+ * asked for a format this installation cannot produce (3) is a different operational
+ * fact from a batch where a hook threw (1), and a pipeline that retries on another
+ * runner needs to be able to tell them apart.
+ */
+export interface BatchRowRecord {
+  row: number;
+  toolId: string;
+  ok: boolean;
+  /** Where the file was written (present only when the row succeeded). */
+  output?: string;
+  format: string;
+  /** The row's own exit code, so a consumer can retry just the exit-3 rows elsewhere. */
+  exit: number;
+  error?: string;
+}
+
+export async function runBatchCli(csvPath: string, opts: { outDir: string; keepGoing?: boolean; json?: boolean }): Promise<number> {
+  let text: string;
+  try {
+    text = await readFile(resolve(process.cwd(), csvPath), 'utf8');
+  } catch (e) {
+    throw usageError(`Cannot read the batch file "${csvPath}" (${(e as Error).message}).`, 'INPUT_UNREADABLE');
+  }
   const rows = parseBatchCsv(text);
   if (!rows.length) {
-    process.stderr.write('No batch rows found. Expected a header row with a `toolId` column, then one row per render.\n');
-    return 1;
+    const message = 'No batch rows found. Expected a header row with a `toolId` column, then one row per render.';
+    process.stderr.write(message + '\n');
+    if (opts.json) {
+      const { emitError } = await import('./envelope.ts');
+      await emitError(Object.assign(new Error(message), { exit: EXIT.USAGE, kind: 'EMPTY_BATCH' }));
+    }
+    return EXIT.USAGE;
   }
   const outDir = resolve(process.cwd(), opts.outDir);
   await mkdir(outDir, { recursive: true });
@@ -57,6 +98,27 @@ export async function runBatchCli(csvPath: string, opts: { outDir: string; keepG
   };
 
   let ok = 0, failed = 0;
+  const records: BatchRowRecord[] = [];
+  /** Emit the envelope for however far the batch got (used on abort AND on completion). */
+  const finish = async (worstCode: number): Promise<number> => {
+    if (opts.json) {
+      const { emitResult } = await import('./envelope.ts');
+      await emitResult({
+        rows: records,
+        summary: { total: rows.length, ok, failed, rendered: ok, aborted: records.length < rows.length },
+        outDir,
+      }, worstCode);
+    }
+    return worstCode;
+  };
+  // Severity order for "the worst row wins": a refusal outranks an unavailable tier,
+  // which outranks a plain failure, which outranks a usage error.
+  const SEVERITY: number[] = [EXIT.OK, EXIT.USAGE, EXIT.FAILED, EXIT.UNAVAILABLE_HERE, EXIT.REFUSED, EXIT.AUTH, EXIT.INTERNAL];
+  let worst: number = EXIT.OK;
+  const record = (e: unknown): void => {
+    const code = exitCodeFor(e);
+    if (SEVERITY.indexOf(code) > SEVERITY.indexOf(worst)) worst = code;
+  };
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
     // Per-row output settings ride in `params` as reserved keys — parseUrlState reads
@@ -73,12 +135,21 @@ export async function runBatchCli(csvPath: string, opts: { outDir: string; keepG
     try {
       await runToolCli({ toolId: row.toolId, params, outputPath, format: row.format ?? fmt });
       ok++;
+      records.push({ row: i + 1, toolId: row.toolId, ok: true, output: outputPath, format: fmt, exit: EXIT.OK });
     } catch (e) {
       failed++;
+      record(e);
+      records.push({
+        row: i + 1, toolId: row.toolId, ok: false, format: fmt,
+        exit: exitCodeFor(e), error: (e as Error).message,
+      });
       process.stderr.write(`✗ row ${i + 1} (${row.toolId}): ${(e as Error).message}\n`);
-      if (!opts.keepGoing) { process.stderr.write('Aborting — use --keep-going to render the rest.\n'); return 1; }
+      if (!opts.keepGoing) {
+        process.stderr.write('Aborting — use --keep-going to render the rest.\n');
+        return finish(worst);
+      }
     }
   }
   process.stderr.write(`\nBatch done — ${ok} rendered${failed ? `, ${failed} failed` : ''} → ${outDir}\n`);
-  return failed ? 1 : 0;
+  return finish(worst);
 }

@@ -23,11 +23,23 @@ Own repo `lolly-cli`, mounted in the umbrella [`lolly`](https://github.com/lolly
 
 `src/run.ts` is the render path: build a jsdom document, load the tool, create the runtime, hydrate the template into that DOM, then export. `src/batch.ts` handles multi-row runs and `src/raster.ts` picks the raster tier.
 
+## The machine surface
+
+Three small modules carry the whole contract a script or an agent sees, and every command goes through them rather than hand-rolling its own answer:
+
+| Module | What it owns |
+|---|---|
+| `src/exit-codes.ts` | the frozen eight-code taxonomy, `CliError` (message + `exit` + a stable `kind`), and `exitCodeFor()`, which classifies a thrown value on typed sentinels only - never on prose |
+| `src/envelope.ts` | the one `--json` document: `{ schemaVersion, command, ok, engine, cli, result, warnings, error }`. `emitResult()` for an answer, `emitError()` for a run that produced none. The top-level catch in `bin/lolly.ts` emits it too, so a `--json` run **always** leaves one parseable document on stdout, including on a crash |
+| `src/environment.ts` | `describeEnvironment()` - what this installation can actually do (capabilities, native formats, and per-tier availability with a reason for each unavailable one). It rides inside `list --json` rather than becoming a command of its own, so discovery is one call |
+
+`src/output.ts` enforces the stream split: `note()`/`warn()` are the only ways the shell says anything, both stderr; `writeOut()` awaits the stdout write so a piped export cannot be truncated; and `keepConsoleOffStdout()` moves `console.log`/`info`/`debug`/`warn` to stderr for the whole process, because a tool's `hooks.js` runs in this realm and a stray log line would otherwise land inside an exported PNG.
+
 ## The bridge
 
 **`src/bridge.ts` is one monolithic file, and that is deliberate.** The web shell splits its bridge into dozens of files with lazy facades because it has a boot budget to defend. A CLI process has no first paint, so there is nothing to defend, and a single file makes this shell readable as what it is: a complete, alternative, from-scratch implementation of the same `HostV1` contract. That the same engine and the same unmodified tools run against it is the point. Do not "improve" it by mirroring the web shell's file layout.
 
-`createCliBridge({ dom, profile, networkAllowlist })` is async and resolves to a `HostV1` with `shell: 'cli'`. Assets come from the filesystem, reading `catalog/assets/index.json` once at startup into a `Map`. State is an in-memory `Map`, so nothing persists between invocations. `log` writes to stdout, or to stderr for `warn` and `error`.
+`createCliBridge({ dom, profile, networkAllowlist })` is async and resolves to a `HostV1` with `shell: 'cli'`. Assets come from the filesystem, reading `catalog/assets/index.json` once at startup into a `Map`. State is an in-memory `Map` unless `$LOLLY_STATE_DIR` names a directory, in which case slots are also written there as JSON so a state-saving tool can be scripted. `log` writes every level to **stderr** - stdout carries the payload and nothing else. `capabilities` declares `network`, `wasm`, `compose` and `capture`; a tool whose manifest needs anything else is refused with exit 3 rather than rendered as a placeholder.
 
 `applyBrandVars` is also exported from here, and `shells/tui` imports `createCliBridge` directly.
 
@@ -62,7 +74,7 @@ npm run smoke                                            # render every catalogu
 
 `npm run cli` is `node shells/cli/bin/lolly.ts`. The `--` matters, otherwise npm eats the flags.
 
-It reads the **active content profile's** views at the repo root, so `npm run profile` tells you which tools it can see. `lolly --help` prints the full flag set, including `--share`, `--c2pa`, `--bleed`, `--marks`, `--imprint`, `--durable`, `--press-profile`, `--link-password` and `--html-fallback`.
+It reads the **active content profile's** views at the repo root, so `npm run profile` tells you which tools it can see. `lolly --help` prints the full flag set and the exit-code taxonomy (0 OK, 1 FAILED, 2 USAGE, 3 UNAVAILABLE_HERE, 4 REFUSED, 5 NOT_FOUND, 6 AUTH, 70 INTERNAL).
 
 ## Build it
 
@@ -70,7 +82,7 @@ There is nothing to build. Node runs the TypeScript directly. Typechecking is `t
 
 ## Surprising things
 
-- **`--profile` is the user-profile file, not a press condition.** The CMYK press condition is `--press-profile`. This trips people up often enough that `bin/lolly.ts` calls it out inline.
+- **`--profile` is the CMYK press condition, matching URL mode's reserved `profile` param.** The user-profile JSON file is `--user-profile`. The two used to share the word `--profile`, which is exactly the collision the GA contract (plans/cli-ga-contract.md B1) removed: a flag name that does not equal its URL param name makes "the CLI is URL mode under a different transport" untrue.
 - **State does not persist.** Every invocation starts with an empty in-memory store, so there are no saved sessions here.
 - **A format that cannot be produced here is an error, not a different file.** Asking for a format this shell cannot make fails with a non-zero exit and writes nothing at the requested path. It used to write HTML under a renamed output and exit 0, which meant a pipeline asking for PDF could receive HTML and never know. `--html-fallback` opts back into the HTML artifact, under a `.html` name and with a warning saying so.
 - **The output is sniffed against the requested format before it is written.** Headless Chromium has no AV1 encoder, so `--export=avif` used to receive PNG bytes and write them under the `.avif` name. Bytes that are demonstrably a different container are now refused.

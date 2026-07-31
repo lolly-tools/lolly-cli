@@ -10,9 +10,9 @@
  * changes were needed.
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
+import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -56,7 +56,34 @@ import { captureUrl } from '../../../packages/node-shell/src/url-capture.ts';
 // it resolves sharp lazily and returns null when it isn't installed, so importing it is
 // free and a lean install simply leaves host.images undefined.
 import { createNodeImagesAPI } from '../../../packages/node-shell/src/images.ts';
+// LOLLY_STATE_DIR resolution (shared with the TUI). RELATIVE for the MCP-bundle reason.
+import { resolveStateDir } from '../../../packages/node-shell/src/state-dir.ts';
+// Text-as-paths on the svg branch (contract §6a). Local to this shell: it resolves
+// fonts through host.text's headless registry, not the web shell's fetching one.
+import { outlineSvgText } from './svg-outline.ts';
+import { unavailableHere } from './exit-codes.ts';
 const REPO_ROOT = repoRoot();
+
+/**
+ * Capabilities THIS shell can actually fulfil — the CLI's answer to the web shell's
+ * PROVIDED_CAPABILITIES (shells/web/src/bridge/capabilities-provided.ts), which the
+ * gallery uses to disable tools it cannot run. The CLI never declared its set at all,
+ * so a `screen`/`microphone` tool rendered a misleading placeholder and exited 0
+ * instead of refusing (contract B11).
+ *
+ * What is in and why:
+ *   • network  — host.net, allowlisted per manifest.
+ *   • wasm     — host.text's HarfBuzz WASM loads in Node.
+ *   • compose  — host.compose renders child tools in-process.
+ *   • capture  — host.capture.page drives the scoped Chromium. Present even when no
+ *                browser is installed: that is a "not installed HERE yet" (exit 3 with
+ *                `lolly install-browser`), not "this shell cannot do it".
+ * What is out: clipboard (throws by design, §4.4), camera/microphone/screen (no
+ * device access in a headless process, and shelling out to one is a non-goal),
+ * ffmpeg (never shipped), filesystem (the RUNNER reads and writes files; the host
+ * bridge exposes no filesystem API a tool could call).
+ */
+export const CLI_CAPABILITIES = ['network', 'wasm', 'compose', 'capture'] as const;
 
 /** One format entry inside a catalog asset record (catalog/assets/index.json). */
 interface CatalogAssetFormat {
@@ -101,6 +128,11 @@ interface CliExportRenderOpts extends ExportOpts {
    *  export.ts's ExportOpts), so this is the CLI's local extension of the same shape,
    *  in url-mode's 0–100 author dial units. Absent ⇒ SDR ⇒ exr/hdr refuse. */
   hdr?: { targets?: readonly string[]; peakNits?: number; reach?: number; lift?: number; richness?: number } | null;
+  /** `--text=outline|live` (contract §1.3). Default outline; 'live' keeps `<text>`. */
+  text?: 'outline' | 'live';
+  /** Reported once per run that could not be outlined, so the runner can warn (and
+   *  refuse under --strict) instead of the bridge writing to stderr itself. */
+  onTextFallback?: (run: { text: string; reason: string }) => void;
 }
 
 /** Element type of parseIconThemesDoc's result — derived so no engine-internal
@@ -129,11 +161,18 @@ export async function createCliBridge(
   const host = {
     version: '1',
     shell: 'cli',
+    capabilities: CLI_CAPABILITIES,
+    // EVERY level goes to stderr (contract B4). `info`/`debug` used to go to stdout,
+    // where a tool's one chatty log line interleaved itself into a piped PNG — and
+    // tools ship as data from another repository, so this shell cannot assume they are
+    // quiet. stdout carries the payload and nothing else.
     log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, ctx?: object): void => {
-      const out = level === 'error' || level === 'warn' ? process.stderr : process.stdout;
-      out.write(`[${level}] ${msg}${ctx ? ' ' + JSON.stringify(ctx) : ''}\n`);
+      if (level === 'debug' && !process.env.DEBUG) return;
+      process.stderr.write(`[${level}] ${msg}${ctx ? ' ' + JSON.stringify(ctx) : ''}\n`);
     },
-  } as CliHost;
+    // The literal is built in stages below (profile, assets, state, export, …), so the
+    // assertion is what tells TypeScript the finished object is a CliHost.
+  } as unknown as CliHost;
 
   host.profile = {
     async get() { return profile; },
@@ -354,16 +393,58 @@ export async function createCliBridge(
     async _deleteUserAsset() { /* no-op: no user images in CLI */ },
   };
 
+  // host.state — in memory by default (a CLI invocation is ephemeral), on DISK when
+  // the machine names a state directory (contract §1.5/B14). Opt-in on purpose: a
+  // render must not leave files in $HOME nobody asked for (non-goal §8.7), but a tool
+  // that saves state was previously unscriptable, because every run started empty.
+  const stateHome = resolveStateDir();
+  const stateFsDir = stateHome.explicit ? join(stateHome.dir, 'state') : null;
+  const slotFile = (slot: string): string => join(stateFsDir!, encodeURIComponent(slot) + '.json');
   host.state = {
-    async save(slot, data) { state.set(slot, { data, updatedAt: new Date().toISOString() }); },
-    async load(slot) { return state.get(slot)?.data ?? null; },
-    async list() { return Array.from(state.keys()).map(slot => ({ slot })) as StateEntry[]; },
-    async delete(slot) { state.delete(slot); },
+    async save(slot, data) {
+      const entry = { data, updatedAt: new Date().toISOString() };
+      state.set(slot, entry);
+      if (stateFsDir) {
+        await mkdir(stateFsDir, { recursive: true });
+        await writeFile(slotFile(slot), JSON.stringify(entry, null, 2));
+      }
+    },
+    async load(slot) {
+      const hit = state.get(slot);
+      if (hit) return hit.data;
+      if (!stateFsDir) return null;
+      try { return (JSON.parse(await readFile(slotFile(slot), 'utf8')) as { data: object }).data ?? null; }
+      catch { return null; }
+    },
+    async list() {
+      const slots = new Set(state.keys());
+      if (stateFsDir) {
+        try {
+          for (const f of await readdir(stateFsDir)) {
+            if (f.endsWith('.json')) slots.add(decodeURIComponent(f.slice(0, -5)));
+          }
+        } catch { /* no state dir yet — nothing saved */ }
+      }
+      return Array.from(slots).map(slot => ({ slot })) as StateEntry[];
+    },
+    async delete(slot) {
+      state.delete(slot);
+      if (stateFsDir) { try { await rm(slotFile(slot)); } catch { /* already gone */ } }
+    },
   };
 
+  // The clipboard keeps throwing (shelling out to pbcopy/xclip is a non-goal), but the
+  // throw is now CLASSIFIED: exit 3, "impossible in this installation", naming the way
+  // out. It is not a bug and it is not a usage error (contract §4.4).
+  const noClipboard = (): never => {
+    throw unavailableHere(
+      'The clipboard is not available in the CLI — write the result with --output=<path> (or --output=- for stdout) instead.',
+      'CAPABILITY_UNAVAILABLE',
+    );
+  };
   host.clipboard = {
-    async writeText() { throw new Error('Clipboard unavailable in CLI; use --output instead'); },
-    async writeImage() { throw new Error('Clipboard unavailable in CLI; use --output instead'); },
+    async writeText() { return noClipboard(); },
+    async writeImage() { return noClipboard(); },
   };
 
   // CLI export covers everything producible without a layout/paint engine:
@@ -436,6 +517,19 @@ function rootSvgOf(node: Element | null): Element | null {
           if (dw) svg.setAttribute('width', toCssLength(dw));
           if (dh) svg.setAttribute('height', toCssLength(dh));
         }
+        // TEXT AS PATHS (contract §6a). Every other vector format this shell writes
+        // (emf/eps/dxf) already outlines through the same host.text; svg kept live
+        // <text>, so a recipient without the font silently got a different design.
+        // `--text=live` (opts.text) is the documented opt-out for anyone who wants an
+        // editable SVG; a run whose font cannot be resolved keeps its <text> and warns,
+        // because unlike EMF, SVG can represent live text and a hard failure on the
+        // everyday format would be worse than a warned fallback.
+        if (opts.text !== 'live') {
+          const res = await outlineSvgText(svg, host, {
+            getComputedStyle: w.getComputedStyle ? (el: Element) => { try { return w.getComputedStyle(el); } catch { return null; } } : null,
+          });
+          for (const f of res.fallbacks) opts.onTextFallback?.(f);
+        }
         const raw = w.XMLSerializer
           ? new w.XMLSerializer().serializeToString(svg)
           : svg.outerHTML;
@@ -458,12 +552,24 @@ function rootSvgOf(node: Element | null): Element | null {
         // EPS is vector PostScript built from the same SVG IR as EMF — text is
         // outlined upstream (svgDomToIr shapes live <text> via host.text; an
         // unresolvable family throws), so the emitter writes no fonts. eps-cmyk
-        // is naive DeviceCMYK: no embedded output intent (same as the web shell)
-        // and, unlike the web shell, no brand cmykPalette overrides.
+        // is naive DeviceCMYK: no embedded output intent (same as the web shell).
+        //
+        // The brand cmykPalette IS threaded now, through the SAME shared builder
+        // the web shell's three CMYK sinks use (engine/src/cmyk-palette.ts). It
+        // used to be omitted here, which made the finish fix web-only: a brand
+        // declaring a Gold spot with finish 'foil' got a naive
+        // rgb→cmyk gold build out of `lolly … --export=eps-cmyk`, silently, with
+        // nothing in the file saying so. A finish now resolves to
+        // FINISH_MASK_CMYK here exactly as it does in the browser.
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('EPS export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'EPS' });
-        const text = emitEps(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi, cmyk: format === 'eps-cmyk', meta: opts.meta as { title?: string } | undefined });
+        const text = emitEps(ir, {
+          width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi,
+          cmyk: format === 'eps-cmyk',
+          ...(format === 'eps-cmyk' ? { cmykPalette: await brandCmykPalette(host) } : {}),
+          meta: opts.meta as { title?: string } | undefined,
+        });
         return new Blob([text], { type: 'application/postscript' });
       }
       if (format === 'dxf') {
@@ -733,5 +839,34 @@ function mimeFor(format: string): string {
     case 'hdr': return 'image/vnd.radiance';
     case 'json': return 'application/json';
     default: return 'application/octet-stream';
+  }
+}
+
+/**
+ * The brand palette as a CMYK substitution map, for the CLI's eps-cmyk sink.
+ *
+ * Built through the ENGINE's `buildCmykPaletteMap` — the same one the web
+ * shell's PDF/TIFF/EPS sinks use — so a declared finish resolves to
+ * `FINISH_MASK_CMYK` in the terminal exactly as it does in the browser. Before
+ * this existed the CLI passed no palette at all, so the finish fix stopped at
+ * the shell boundary and `lolly wordmark --export=eps-cmyk` still converted a
+ * declared foil into its plausible swatch gold, silently.
+ *
+ * Total: a brand with no tokens, an unreadable tokens doc or a throwing
+ * `host.tokens.colors()` yields an empty map, which is byte-identical to the
+ * previous behaviour (every colour falls through to the generic conversion).
+ */
+async function brandCmykPalette(host: HostV1): Promise<Map<string, { cmyk: [number, number, number, number] }>> {
+  try {
+    const colors = await host.tokens?.colors?.();
+    if (!Array.isArray(colors) || colors.length === 0) return new Map();
+    return buildCmykPaletteMap(colors.map(c => ({
+      hex: c.value,
+      ...(Array.isArray(c.cmyk) ? { cmyk: c.cmyk } : {}),
+      label: c.name,
+      spot: c.spot ?? null,
+    })));
+  } catch {
+    return new Map();
   }
 }

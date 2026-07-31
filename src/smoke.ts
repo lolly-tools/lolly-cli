@@ -85,17 +85,40 @@ interface SmokeArgs {
   format?: string;
   /** Row/summary sink (stdout by default) — injectable so tests don't garble TAP. */
   out?: (line: string) => void;
+  /** --json: the §5.2 envelope on stdout; the progress table moves to stderr. */
+  json?: boolean;
+}
+
+/** One tool's outcome, as `smoke --json` reports it. */
+export interface SmokeRecord {
+  id: string;
+  /** `ok` rendered · `failed` did not · `skipped` never attempted · `layout` rendered
+   *  as html because it has no browser-free path to its own first native format. */
+  outcome: 'ok' | 'failed' | 'skipped' | 'layout';
+  format?: string;
+  bytes?: number;
+  ms?: number;
+  /** Why it was skipped, or what went wrong. */
+  reason?: string;
 }
 
 /** Run the gate. Returns the process exit code: 0 all ok, 1 any ✗, 2 bad invocation. */
-export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<number> {
-  const print = out ?? ((line: string) => process.stdout.write(line));
+export async function smokeCli({ only, format, out, json = false }: SmokeArgs = {}): Promise<number> {
+  // With --json the envelope owns stdout, so the progress table becomes a diagnostic
+  // and moves to stderr. Same table, same rows; only the stream changes.
+  const print = out ?? ((line: string) => (json ? process.stderr : process.stdout).write(line));
+  const records: SmokeRecord[] = [];
+  const fail = async (message: string, kind: string): Promise<number> => {
+    process.stderr.write(message);
+    if (json) {
+      const { emitError } = await import('./envelope.ts');
+      await emitError(Object.assign(new Error(message.trim()), { exit: 2, kind }));
+    }
+    return 2;
+  };
 
   if (format && !NODE_FORMATS.includes(format.toLowerCase())) {
-    process.stderr.write(
-      `smoke is browser-free — --format must be one of: ${NODE_FORMATS.join(', ')}\n`,
-    );
-    return 2;
+    return fail(`smoke is browser-free — --format must be one of: ${NODE_FORMATS.join(', ')}\n`, 'BAD_FLAG_VALUE');
   }
 
   const index = JSON.parse(await readFile(join(REPO_ROOT, 'catalog', 'tools', 'index.json'), 'utf8')) as {
@@ -106,8 +129,7 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
     const want = only.split(',').map(s => s.trim()).filter(Boolean);
     const unknown = want.filter(id => !ids.includes(id));
     if (unknown.length) {
-      process.stderr.write(`Unknown tool id(s): ${unknown.join(', ')}. Run \`lolly\` to list tools.\n`);
-      return 2;
+      return fail(`Unknown tool id(s): ${unknown.join(', ')}. Run \`lolly\` to list tools.\n`, 'UNKNOWN_TOOL');
     }
     ids = want;
   }
@@ -128,6 +150,7 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
     const reason = skipReason(manifest, format);
     if (reason) {
       skipped++;
+      records.push({ id, outcome: 'skipped', reason });
       print(`– ${id.padEnd(idWidth)} ${'—'.padEnd(9)} skipped: ${reason}\n`);
       continue;
     }
@@ -159,6 +182,7 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
       }
       const bytes = (await stat(outputPath)).size;
       ok++;
+      records.push({ id, outcome: 'ok', format: fmt ?? 'html', bytes, ms: Date.now() - t0 });
       print(`✓ ${id.padEnd(idWidth)} ${(fmt ?? 'html').padEnd(9)} ${bytes.toLocaleString()} B  ${Date.now() - t0}ms\n`);
     } catch (e) {
       capture.restore();
@@ -181,6 +205,10 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
           retry.restore();
           layout++;
           const bytes = (await stat(htmlPath)).size;
+          records.push({
+            id, outcome: 'layout', format: 'html', bytes, ms: Date.now() - t0,
+            reason: `no browser-free ${fmt}; rendered as html, hooks ok`,
+          });
           print(`~ ${id.padEnd(idWidth)} ${`${fmt}:html`.padEnd(9)} ${bytes.toLocaleString()} B  ${Date.now() - t0}ms  (layout tool: no browser-free ${fmt}; hooks ok)\n`);
           continue;
         } catch (inner) {
@@ -190,18 +218,29 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
       }
       failed++;
       const msg = ((e as Error).message ?? String(e)).split('\n')[0];
+      records.push({ id, outcome: 'failed', format: fmt ?? 'html', ms: Date.now() - t0, reason: msg });
       print(`✗ ${id.padEnd(idWidth)} ${(fmt ?? 'html').padEnd(9)} ${msg}\n`);
       const log = capture.text().trim();
       if (log) print(log.split('\n').map(l => `    ${l}`).join('\n') + '\n');
     }
   }
 
-  const secs = ((Date.now() - started) / 1000).toFixed(1);
+  const elapsed = Date.now() - started;
   print(
     `\nsmoke: ${ok} ✓  ${failed} ✗  ${layout} ~ (layout tools rendered as html)  ${skipped} skipped  ` +
-    `(${ids.length} tools, ${secs}s) — outputs in ${outDir}\n`,
+    `(${ids.length} tools, ${(elapsed / 1000).toFixed(1)}s) — outputs in ${outDir}\n`,
   );
-  return failed ? 1 : 0;
+  const exit = failed ? 1 : 0;
+  if (json) {
+    const { emitResult } = await import('./envelope.ts');
+    await emitResult({
+      tools: records,
+      summary: { total: ids.length, ok, failed, layout, skipped, ms: elapsed },
+      outDir,
+      ...(format ? { forcedFormat: format } : {}),
+    }, exit);
+  }
+  return exit;
 }
 
 /**

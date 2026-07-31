@@ -24,10 +24,13 @@ import { assertRenderOk } from '@lolly-tools/node-shell/render-integrity';
 // Fail loud, part two: refuse bytes that are demonstrably not the requested container
 // (headless Chromium has no AV1 encoder, so an --export=avif used to write PNG).
 import { assertFormatBytes } from '@lolly-tools/node-shell/format-sniff';
+import { needsBrowserTier } from '@lolly-tools/node-shell/browser-tier';
 // url-shot: capture a live page via the scoped Chromium (shared with the TUI).
 import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
-import { createCliBridge, applyBrandVars } from './bridge.ts';
+import { createCliBridge, applyBrandVars, CLI_CAPABILITIES } from './bridge.ts';
 import type { Profile, ExportOpts } from '@lolly-tools/core/host-v1';
+import { note, warn, writeOut, isStrict } from './output.ts';
+import { usageError, unavailableHere, refused, authError } from './exit-codes.ts';
 
 const REPO_ROOT = repoRoot();
 
@@ -45,43 +48,61 @@ interface RunToolCliArgs {
    *  cannot be produced here. Off by default — silently substituting the format was
    *  the single worst defect in this shell (see the export section below). */
   htmlFallback?: boolean;
+  /** --text=outline|live (contract §1.3/§6a). Vector export outlines text by default;
+   *  'live' keeps editable `<text>` and accepts that the recipient needs the font. */
+  text?: 'outline' | 'live';
+}
+
+/**
+ * The capabilities THIS shell fulfils, as a set (contract B11). A tool manifest that
+ * requires anything outside it is refused rather than rendered as a placeholder.
+ */
+const PROVIDED = new Set<string>(CLI_CAPABILITIES);
+
+/**
+ * Refuse a tool whose manifest requires a capability this shell cannot provide.
+ *
+ * Before this, `lolly screencap --export=png` produced a 639 KB PNG of the tool's
+ * empty-state placeholder and exited 0 — a plausible file that is not the thing anyone
+ * asked for. Exit 3 (UNAVAILABLE_HERE), not 1: a screen recorder is not broken, it is
+ * in the wrong room.
+ */
+export function unmetCapabilities(manifest: { capabilities?: readonly string[] }): string[] {
+  return (manifest.capabilities ?? []).filter(c => !PROVIDED.has(c));
+}
+
+export function assertCapabilities(manifest: { id: string; capabilities?: readonly string[] }): void {
+  const missing = unmetCapabilities(manifest);
+  if (!missing.length) return;
+  throw unavailableHere(
+    `"${manifest.id}" needs ${missing.map(c => `"${c}"`).join(' + ')}, which the CLI cannot provide. ` +
+    `This shell offers ${[...PROVIDED].join(', ')}. Run the tool in the web shell or the desktop app; ` +
+    'nothing was rendered, because a render here would be the tool\'s empty placeholder under the name you asked for.',
+    'CAPABILITY_UNAVAILABLE',
+  );
 }
 
 /**
  * Does this failure mean "the Node host can't do this, a real browser can"?
  *
- * TWO signals, in order of reliability:
- *
- *   1. A TYPED SENTINEL on the error — `err.code === 'NEEDS_BROWSER'`, or a truthy
- *      `err.needsBrowser`. This is the supported way for a tool hook to say it, and
- *      the only one that isn't coupled to prose. Tool hooks ship as DATA from a
- *      different repository, so wording there and control flow here must not be the
- *      same thing: `convert-image` fails hard today purely because its hook says
- *      "isn't available in this app" where the old regex expected "not available".
- *   2. The prose regex, kept as a compatibility fallback for every already-shipped
- *      tool. Broadened to accept the "isn't"/"is not" split that caused that bug.
- *
- * A verification failure reads like neither, so a failed export gate still fails loudly.
- *
- * Accepts an Error or a bare message string (the string form is what the older tests
- * and the MCP twin call it with).
+ * Re-exported, not implemented here: the canonical version lives in
+ * `@lolly-tools/node-shell/browser-tier` so this shell, the TUI and the MCP server's
+ * transform path answer the question identically. The MCP copy had drifted to the old
+ * prose-only regex, which meant `convert-image` escalated on the CLI and failed hard
+ * over MCP. Kept as a named export from this module because the existing tests and
+ * call sites import it from here.
  */
-export function needsBrowserTier(err: unknown): boolean {
-  if (err && typeof err === 'object') {
-    const e = err as { code?: unknown; needsBrowser?: unknown };
-    if (e.code === 'NEEDS_BROWSER' || e.needsBrowser === true) return true;
-  }
-  const message = typeof err === 'string' ? err : (err as { message?: unknown } | null)?.message;
-  if (typeof message !== 'string') return false;
-  //  "needs a browser canvas" · "is not / isn't / isn’t available in this app" · "needs a browser"
-  return /browser canvas|n(?:['’]|o)t available in this app|needs a browser|requires a browser/i.test(message);
-}
+export { needsBrowserTier };
 
 /** ExportOpts plus the two CLI-local extensions run.ts threads to the bridge:
  *  the PDF open-password and the `hdr=` dials (the canonical HostV1 ExportOpts
  *  carries neither — the web shell extends it the same way). */
 type CliExportOpts = ExportOpts & {
   password?: string;
+  /** `--text=outline|live` — vector text-as-paths, and its opt-out (contract §6a). */
+  text?: 'outline' | 'live';
+  /** Reported per run the svg branch could not outline (see the bridge). */
+  onTextFallback?: (run: { text: string; reason: string }) => void;
   hdr?: { targets?: readonly string[]; peakNits?: number; reach?: number; lift?: number; richness?: number };
 };
 
@@ -130,7 +151,7 @@ export function quietVirtualConsole(jsdom: typeof import('jsdom')): InstanceType
   return vc;
 }
 
-export async function runToolCli({ toolId, params, outputPath, format, share, verify, htmlFallback }: RunToolCliArgs): Promise<void> {
+export async function runToolCli({ toolId, params, outputPath, format, share, verify, htmlFallback, text }: RunToolCliArgs): Promise<void> {
   // Lazy import — jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>', {
@@ -141,10 +162,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   globalThis.document = dom.window.document;
   globalThis.Element = dom.window.Element;
 
-  const fetchFile = async (path: string): Promise<string> => {
-    const full = join(REPO_ROOT, 'tools', path);
-    return readFile(full, 'utf8');
-  };
+  const fetchFile = readToolFile;
 
   // --lang=xx selects the tool's manifest translation sidecar, if it ships one
   // (engine/src/loader.ts's applyManifestI18n) — the CLI is URL mode under a
@@ -153,10 +171,23 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // and never surfaces it in `values`).
   const tool = await loadToolOrThrow(toolId, fetchFile, { lang: normalizeLang(params.lang) ?? undefined });
 
-  // --profile=path.json pre-fills bindToProfile inputs from the user's profile
-  // (the bridge serves it via host.profile.get). A missing/invalid file warns
-  // and continues with an empty profile, so the render still runs.
-  const profile = await readProfile(params.profile);
+  // Refuse before rendering anything: a tool that needs a camera/mic/screen/clipboard
+  // has no honest headless render, and the placeholder it used to emit looked like a
+  // real answer (contract B11).
+  assertCapabilities(tool.manifest);
+
+  // Reserved params this shell cannot honour: refuse the ones whose absence would
+  // change the physical artefact, warn about the rest (contract B6).
+  checkReservedParams(params);
+  // A reserved flag that shadows one of THIS tool's declared inputs never reaches the
+  // input — say so, and name the escape hatch (contract B7).
+  warnShadowedInputs(params, tool.manifest);
+
+  // --user-profile=path.json pre-fills bindToProfile inputs from the user's profile
+  // (the bridge serves it via host.profile.get). Note the NAME: `--profile` is the
+  // press condition, matching URL mode's reserved `profile` param exactly (contract
+  // B1) — one word cannot mean two things.
+  const profile = await readProfile(params['user-profile']);
   // Thread the manifest's network.allowlist into host.net (same per-tool gate the
   // web view applies post-load) — without it every host.net fetch on the CLI
   // rejects, breaking the one-render-path parity for network-capable tools.
@@ -187,17 +218,51 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // different transport, so a packed share link must run identically here
   // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(rawQuery);
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam } = parseUrlState(
     query,
     tool.manifest,
   );
+  // `--input.<id>=<value>` — the explicit input namespace (contract B7). Never
+  // intercepted by reserved handling, so the eight shipped tools that declare a
+  // `width`/`height`/`format` input stay reachable without renaming inputs whose URLs
+  // are a harder contract than this CLI. Applied AFTER parseUrlState so it wins.
+  Object.assign(values, explicitInputValues(params, tool.manifest));
   // Print prep + press intent for the browser (Tier-B) export tier. `marks` is passed as
   // the raw CSV (?marks) rather than round-tripped through parseUrlState's flag map, and
   // read off the EXPANDED query so a packed link works too. The CMYK press condition uses
   // a distinct --press-profile flag: url-mode's `profile` means the press condition, but
   // the CLI's --profile is the user-profile JSON file (readProfile above) — never conflate.
   const marksRaw = new URLSearchParams(query).get('marks') || null;
-  const pressProfile = params['press-profile'] || null;
+  // The CMYK press condition. `--press-profile` is the explicit spelling; `--profile`
+  // is its frozen alias and reads straight off url-mode's reserved `profile` param, so
+  // a shared print link and a hand-typed flag mean the same thing (contract B1).
+  const pressProfile = params['press-profile'] || pressProfileParam || null;
+
+  // `cuts=N` asks for a CONTACT SHEET: N stills sampled across a timed tool's stage,
+  // which only the web shell's sequence-cuts renderer produces. The CLI accepted the
+  // param, rendered ONE frame, and said nothing — a different artefact under the right
+  // name. Exit 3, because a runner with the browser tier can do it (contract B6; note
+  // that the contract calls `cuts` a print instruction, which it is not — the refusal
+  // is right, the reason is "the CLI has no sequence renderer").
+  if (cuts > 1) {
+    throw unavailableHere(
+      `--cuts=${cuts} asks for a ${cuts}-frame contact sheet, which the CLI cannot produce (the sequence renderer lives in the web shell). ` +
+      'Nothing was written: a single frame under the name you asked for would be a different artefact. Export from the web shell, or drop --cuts.',
+      'CUTS_UNAVAILABLE',
+    );
+  }
+
+  // --output=- means stdout, explicitly (contract B10). Normalised here so every
+  // downstream branch sees "no path" and streams, exactly as an omitted --output does.
+  if (outputPath === '-') outputPath = undefined;
+  // `--filename=<name>` names the output file, written into the working directory, when
+  // --output is absent (contract B6: it used to be accepted, ignored, and produce
+  // byte-identical output with nothing to say so). A BARE `--filename` is a usage error,
+  // rejected by the entry point with every other value-taking flag (contract B5).
+  const filenameFlag = filename ?? null;
+  if (filenameFlag && outputPath) {
+    warn('FILENAME_IGNORED', `--output=${outputPath} wins over --filename=${filenameFlag}; the file is written to --output.`);
+  }
 
   // File-typed inputs arrive as a filesystem path (--photo=./pic.jpg → an
   // {__file, path} ref from parseUrlState). The engine can't read files (it's
@@ -208,8 +273,27 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     const ref = values[input.id];
     const p = ref && typeof ref === 'object' ? (ref as { path?: string }).path : null;
     if (!p) { delete values[input.id]; continue; }
+    // `-` reads the file from stdin (contract B10), so a utility composes with the
+    // shell: `cat in.pdf | lolly strip-data --source=- > out.pdf`. Frozen before GA
+    // precisely because once `-` can be a literal path, redefining it is breaking.
+    if (p === '-') {
+      const buf = await readStdin();
+      if (!buf.length) {
+        throw usageError(`--${input.id}=- reads the file from stdin, but stdin was empty.`, 'EMPTY_STDIN');
+      }
+      values[input.id] = {
+        __file: true, name: 'stdin', mime: 'application/octet-stream',
+        size: buf.length, bytes: new Uint8Array(buf), url: null,
+      };
+      continue;
+    }
     const abs = resolve(process.cwd(), p);
-    const buf = await readFile(abs);
+    let buf: Buffer;
+    try {
+      buf = await readFile(abs);
+    } catch (e) {
+      throw usageError(`--${input.id}: cannot read "${p}" (${(e as Error).message}).`, 'INPUT_UNREADABLE');
+    }
     values[input.id] = {
       __file: true,
       name: basename(abs),
@@ -261,7 +345,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     const fields = (input.fields ?? []) as Array<{ id: string; label?: string; type?: string }>;
     const { rows, truncated } = parseDataRows(text, { fields });
     values[input.id] = rows as (typeof values)[string];
-    process.stderr.write(`✓ Imported ${rows.length} row${rows.length === 1 ? '' : 's'} into --${input.id} from ${dataPath}${truncated ? ' (row cap reached)' : ''}\n`);
+    note(`✓ Imported ${rows.length} row${rows.length === 1 ? '' : 's'} into --${input.id} from ${dataPath}${truncated ? ' (row cap reached)' : ''}`);
   }
 
   // `--<tableInput>-data=table.csv` fills a `table` input from a CSV/TSV/Markdown
@@ -277,7 +361,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     const parsed = parseTableText(text);
     if (!parsed) throw new Error(`--${input.id}-data: ${dataPath} does not parse as a CSV/TSV/Markdown table`);
     values[input.id] = parsed as (typeof values)[string];
-    process.stderr.write(`✓ Imported ${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} × ${parsed.columns.length} columns into --${input.id} from ${dataPath}\n`);
+    note(`✓ Imported ${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} × ${parsed.columns.length} columns into --${input.id} from ${dataPath}`);
   }
 
   // --share/--link: print a shareable lolly.tools link for the current inputs instead of
@@ -288,7 +372,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   if (share) {
     const runtime = await createRuntime(tool, host, values);
     const q = serializeUrlState(runtime.getModel());
-    process.stdout.write(`https://lolly.tools/#/tool/${tool.manifest.id}${q ? '?' + q : ''}\n`);
+    await writeOut(`https://lolly.tools/#/tool/${tool.manifest.id}${q ? '?' + q : ''}\n`);
     return;
   }
 
@@ -300,12 +384,12 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     const fileIn = (tool.manifest.inputs ?? []).find(i => i.type === 'file');
     let tier = 'node';
     let bytes: Uint8Array;
-    let filename: string | undefined;
+    let suggestedName: string | undefined;
     let usedTransformBrowser = false;
     try {
       const res = await runtime.exportFile();
       bytes = res.bytes as Uint8Array;
-      filename = res.filename;
+      suggestedName = res.filename;
     } catch (e) {
       const msg = (e as Error).message;
       const ref = fileIn ? (values[fileIn.id] as { name?: string; mime?: string; bytes?: Uint8Array } | undefined) : undefined;
@@ -314,7 +398,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       // host cannot do. Re-run the SAME hook in the scoped browser driving the built
       // web shell — the tool's export gate runs there, on these bytes. When no browser
       // or no built shell is present, transformViaWebShell names exactly what's missing.
-      process.stderr.write(`Note: ${msg} Running it in the browser tier instead.\n`);
+      note(`Note: ${msg} Running it in the browser tier instead.`);
       const { transformViaWebShell } = await import('@lolly-tools/node-shell/webshell-render');
       const out = await transformViaWebShell({
         toolId: tool.manifest.id,
@@ -323,14 +407,20 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
         query: serializeUrlState(runtime.getModel()),
       });
       bytes = out.bytes;
-      filename = out.filename;
+      suggestedName = out.filename;
       tier = 'browser';
       usedTransformBrowser = true;
     }
     // Copy the VIEW (not `.buffer`): the browser tier hands back a Uint8Array whose
     // backing buffer may be larger than the file, and `.buffer` would write the slack.
     const buf = Buffer.from(bytes);
-    const dest = outputPath || (filename ? resolve(process.cwd(), filename) : null);
+    // WITHOUT --output, a transform streams to stdout like every other path in this
+    // shell (contract §11: docs/cli.md always claimed it did; the code instead wrote
+    // `<name>-clean.svg` into the working directory and printed nothing, so a pipeline
+    // that piped it got an empty stream and a surprise file). `--filename=<name>` is
+    // how you ask for a named file without naming a path; the hook's own suggestion is
+    // used for it only when you do.
+    const dest = outputPath || (filenameFlag ? resolve(process.cwd(), filenameFlag) : null);
     if (dest) {
       await writeFile(dest, buf);
       // One-line result summary (input→output delta + the tool's a11y summary) so the
@@ -339,16 +429,17 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       const inBytes = fileIn ? (values[fileIn.id] as { size?: number } | undefined)?.size : undefined;
       const label = runtime.getHydratedString(tool.manifest.a11yLabel).trim();
       const delta = typeof inBytes === 'number' ? `${inBytes.toLocaleString()} → ${buf.length.toLocaleString()} bytes` : `${buf.length.toLocaleString()} bytes`;
-      process.stderr.write(`✓ ${label ? label + ' — ' : ''}${delta} → ${dest}\n`);
+      note(`✓ ${label ? label + ' — ' : ''}${delta} → ${dest}`);
     } else {
-      process.stdout.write(buf);
+      if (suggestedName) note(`Note: streaming to stdout. The tool suggested the name "${suggestedName}" — pass --output=<path> or --filename=<name> to write a file.`);
+      await writeOut(buf);
     }
     // --verify: one line per file. The tool's exportFile is what runs the checks and
     // it throws on a failed one (nothing is written, exit 1), so reaching here means
     // no check failed. Stated exactly that way — this does not re-run anything.
     if (verify) {
       const srcName = fileIn ? (values[fileIn.id] as { name?: string } | undefined)?.name ?? '(input)' : '(no file input)';
-      process.stderr.write(`✓ verified: ${tool.manifest.id} exported ${srcName} with no failed check (tier: ${tier})\n`);
+      note(`✓ verified: ${tool.manifest.id} exported ${srcName} with no failed check (tier: ${tier})`);
     }
     if (usedTransformBrowser) {
       const [{ closeBrowser }, { closeWebShell }] = await Promise.all([
@@ -382,10 +473,11 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // time instead: a tool with no vector root, or a request with no float source,
   // refuses with a message that says which. See DEEP_FORMATS in node-shell/raster.ts.
   if (!tool.manifest.render.formats.includes(targetFormat) && !DEEP_FORMATS.includes(targetFormat as never)) {
-    throw new Error(
+    throw usageError(
       `Tool "${toolId}" does not support format "${targetFormat}". ` +
       `Supported: ${tool.manifest.render.formats.join(', ')}` +
       ` (plus the pro float formats ${DEEP_FORMATS.join(', ')}, which need hdr=1)`,
+      'UNDECLARED_FORMAT',
     );
   }
 
@@ -449,6 +541,21 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     }
     // --password= sets the standard PDF's open-password (basic lock).
     if (targetFormat === 'pdf' && password) exportOpts.password = password;
+    // Text as paths on vector export (contract §6a). `--text=live` opts out; a run whose
+    // font this host cannot resolve keeps its live <text> and is reported here, once per
+    // run, so the person exporting knows which words a recipient may see in a different
+    // face. Under --strict the fallback is a refusal (exit 4), because a strict pipeline
+    // asked for "outlined or nothing".
+    if (text === 'live') {
+      exportOpts.text = 'live';
+      // EMF/EPS/DXF have no live-text representation at all — the emitters write
+      // outlines or nothing. Say so rather than accept a flag that cannot apply.
+      if (['emf', 'eps', 'eps-cmyk', 'dxf'].includes(targetFormat.toLowerCase())) {
+        warn('TEXT_LIVE_IGNORED', `--text=live cannot apply to "${targetFormat}": the format carries no text, only geometry. Text was outlined.`);
+      }
+    }
+    const textFallbacks: Array<{ text: string; reason: string }> = [];
+    exportOpts.onTextFallback = (run) => textFallbacks.push(run);
 
     const dims = {
       width: width ?? undefined, height: height ?? undefined, unit: unit ?? undefined, dpi: dpi ?? undefined,
@@ -489,11 +596,12 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // PNG, an SVG or an EPS on any tier. So the allowlist is those three, and every other
     // format refuses by name rather than accepting flags it will ignore.
     if ((bleed || marksRaw) && !PRINT_PREP_FORMATS.has(targetFormat.toLowerCase())) {
-      throw new Error(
+      throw unavailableHere(
         `--bleed/--marks cannot be applied to "${targetFormat}". Bleed boxes and crop/registration marks are ` +
         `page geometry, and only the page formats carry them: ${[...PRINT_PREP_FORMATS].join(', ')}. ` +
         `Accepting the flags here would give you a file identical to one exported without them, with nothing to say so. ` +
         'Export one of those formats, or drop the flags. No file was written.',
+        'PRINT_PREP_UNAVAILABLE',
       );
     }
 
@@ -530,9 +638,9 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
         // browser tier can't run either, both halves are reported and nothing is written.
         if (!VECTOR_ESCALATABLE.has(targetFormat.toLowerCase()) || (e as Error)?.name === 'RenderIntegrityError') throw e;
         domFreeError = e as Error;
-        process.stderr.write(
+        note(
           `Note: "${targetFormat}" has no browser-free path for this tool (${firstLine(domFreeError.message)}). ` +
-          'Escalating to the browser render tier.\n',
+          'Escalating to the browser render tier.',
         );
         buf = await viaRaster();
         domFreeError = null;
@@ -565,10 +673,26 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       usedBrowser = false;
       // Retarget --output to a .html name so the file's extension matches its content.
       if (outputPath) outputPath = outputPath.replace(/\.[^./\\]+$/, '') + '.html';
-      process.stderr.write(
-        `Warning: "${targetFormat}" could not be produced here (${firstLine((e as Error).message)}). ` +
-        `--html-fallback was given, so HTML was written instead${outputPath ? ` — to ${outputPath}, NOT the name you asked for` : ''}.\n`,
-      );
+      warn('HTML_FALLBACK',
+        `"${targetFormat}" could not be produced here (${firstLine((e as Error).message)}). ` +
+        `--html-fallback was given, so HTML was written instead${outputPath ? ` — to ${outputPath}, NOT the name you asked for` : ''}.`);
+    }
+
+    // Runs the svg branch could not outline. Reported once per run, in the exporter's
+    // own terms ("this word, in this font, stays live text"), and refused outright when
+    // --strict says the pipeline wants outlines or nothing.
+    if (textFallbacks.length) {
+      const detail = textFallbacks.map(f => `"${f.text.slice(0, 40)}" (${f.reason})`).join('; ');
+      if (isStrict()) {
+        throw refused(
+          `--strict: ${textFallbacks.length} text run${textFallbacks.length === 1 ? '' : 's'} could not be outlined and would ship as live <text> — ${detail}. ` +
+          'No file was written. Install the font, or pass --text=live to accept live text.',
+          'TEXT_NOT_OUTLINED',
+        );
+      }
+      warn('TEXT_NOT_OUTLINED',
+        `${textFallbacks.length} text run${textFallbacks.length === 1 ? '' : 's'} kept live <text> instead of outlines — ${detail}. ` +
+        'Recipients without that font will see a different face.', 'gate');
     }
   }
 
@@ -590,7 +714,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // url-shot capture) stamp in Node. The Tier-B browser tier already stamped via the
     // forwarded ?c2pa param (exportUrl) — re-stamping would double the credential.
     if (finalFormat === 'pdf' && password) {
-      process.stderr.write('Warning: password-locked export — skipping Content Credentials (an encrypted document cannot take the C2PA update).\n');
+      warn('C2PA_SKIPPED', 'password-locked export — skipping Content Credentials (an encrypted document cannot take the C2PA update).');
     } else {
       try {
         // The "what was this made from / where / when / how big" record, matching
@@ -602,18 +726,23 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
         }));
         buf = Buffer.from(stamped.buffer as ArrayBuffer, stamped.byteOffset, stamped.byteLength);
       } catch (e) {
-        process.stderr.write(`Warning: Content Credentials not attached — ${(e as Error).message}\n`);
+        warn('C2PA_SKIPPED', `Content Credentials not attached — ${(e as Error).message}`);
       }
     }
   } else if (c2pa?.on && !webShellExport) {
-    process.stderr.write(`Warning: format "${finalFormat}" has no C2PA container — Content Credentials skipped.\n`);
+    warn('C2PA_SKIPPED', `format "${finalFormat}" has no C2PA container — Content Credentials skipped.`);
   }
 
-  if (outputPath) {
-    await writeFile(outputPath, buf);
-    process.stderr.write(`✓ Wrote ${buf.length} bytes to ${outputPath}\n`);
+  // `--filename=<name>` names the file when no --output was given (contract B6). It is
+  // resolved against the working directory, never against the tool or the catalog.
+  const destPath = outputPath ?? (filenameFlag ? resolve(process.cwd(), filenameFlag) : null);
+  if (destPath) {
+    await writeFile(destPath, buf);
+    note(`✓ Wrote ${buf.length} bytes to ${destPath}`);
   } else {
-    process.stdout.write(buf);
+    // AWAITED (contract B3): process.exit() right after a pipe write discards whatever
+    // has not been flushed, which is how a 638 KB PNG arrived as 65536 bytes.
+    await writeOut(buf);
   }
 
   // Tier B launches a pooled Chromium + a localhost dist server. This CLI run is
@@ -653,6 +782,13 @@ const REAL_RENDER_FAILURES = new Set(['RenderIntegrityError', 'DeepSourceError',
 
 const firstLine = (s: string): string => String(s ?? '').split('\n')[0]!.trim();
 
+/** Read all of stdin as bytes — the `-` path for `file`-typed inputs and `validate -`. */
+export async function readStdin(): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk as Buffer));
+  return Buffer.concat(chunks);
+}
+
 /**
  * The refusal for "this format cannot be produced here".
  *
@@ -678,7 +814,110 @@ export function exportFailure(format: string, failure: Error, domFreeError: Erro
 }
 
 /** Flags this shell reads itself, on top of url-mode's RESERVED set. */
-const CLI_FLAGS = new Set(['press-profile', 'link-password', 'html-fallback', 'help', 'version']);
+export const CLI_FLAGS = new Set([
+  'press-profile', 'user-profile', 'link-password', 'html-fallback', 'help', 'version',
+  'text', 'password-stdin', 'share', 'link', 'verify',
+  // Global flags (contract §1.2), consumed by the entry point but still present in the
+  // params object a programmatic caller passes through.
+  'quiet', 'verbose', 'strict', 'json',
+]);
+
+/**
+ * Reserved params URL mode defines but this shell does not implement.
+ *
+ * They were accepted, ignored, and produced byte-identical output with no message
+ * (contract B6). Each one now says so; `--strict` turns the whole run into an exit 2,
+ * which is the pipeline author's opt-in rather than everyone's problem.
+ *
+ * Not in this list because they ARE handled: format/export/output/filename/width/height/
+ * w/h/unit/dpi/profile/password/bleed/marks/c2pa/imprint/durable/hdr/depth/lang/z/zx,
+ * and `cuts`, which is refused outright above.
+ */
+const UNSUPPORTED_RESERVED: Record<string, string> = {
+  copy: 'the CLI cannot reach a clipboard',
+  slot: 'saved slots are a GUI concept; the CLI is ephemeral',
+  full: 'there is no viewport to go full-bleed in',
+  options: 'the options panel is a GUI affordance',
+  nostage: 'there is no stage chrome to suppress',
+  _v: 'the CLI always runs the tool version on disk',
+};
+
+export function unsupportedReservedParams(params: Record<string, string>): string[] {
+  return Object.keys(params).filter(k => k in UNSUPPORTED_RESERVED);
+}
+
+function checkReservedParams(params: Record<string, string>): void {
+  for (const k of unsupportedReservedParams(params)) {
+    warn('RESERVED_UNSUPPORTED', `--${k} is not supported by the CLI (${UNSUPPORTED_RESERVED[k]}) and had no effect.`);
+  }
+}
+
+/**
+ * Warn when a reserved flag SHADOWS one of this tool's declared inputs.
+ *
+ * `lolly chart-creator --width=999 --share` printed a link containing `width=1080`: the
+ * flag went to export sizing, the input kept its default, and nothing said so. Eight
+ * shipped tools declare a `width`/`height` input and one declares `format`; renaming
+ * them would break their URLs, which are a harder contract than this CLI, so the escape
+ * hatch is a namespace (`--input.<id>=`) and the collision is announced (contract B7).
+ */
+export function shadowedInputs(
+  params: Record<string, string>,
+  manifest: { inputs?: Array<{ id: string; urlKey?: string }> },
+): string[] {
+  const declared = new Set<string>();
+  for (const i of manifest.inputs ?? []) { declared.add(i.id); if (i.urlKey) declared.add(i.urlKey); }
+  return Object.keys(params).filter(k => RESERVED.has(k) && declared.has(k));
+}
+
+function warnShadowedInputs(params: Record<string, string>, manifest: { id: string; inputs?: Array<{ id: string; urlKey?: string }> }): void {
+  for (const k of shadowedInputs(params, manifest)) {
+    warn('INPUT_SHADOWED',
+      `--${k} is a reserved export flag AND an input of "${manifest.id}". The value went to the export, not to the input. ` +
+      `Use --input.${k}=<value> to set the input.`);
+  }
+}
+
+/**
+ * Values from the explicit `--input.<id>=<value>` namespace (contract B7).
+ *
+ * Coercion goes through the ENGINE's own parser rather than a second implementation
+ * here: each value is handed to `parseUrlState` under a synthetic, never-reserved
+ * urlKey, so `--input.width=12` coerces exactly as `?width=12` would if `width` were
+ * not reserved. One coercion rule, no drift.
+ *
+ * `--input.<vectorId>.<field>=` needs nothing: a dotted key is never reserved, so the
+ * bare `--<vectorId>.<field>=` form already reaches the input.
+ */
+export function explicitInputValues(
+  params: Record<string, string>,
+  manifest: { inputs?: Array<{ id: string; urlKey?: string; type?: string }> },
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const byId = new Map((manifest.inputs ?? []).map(i => [i.id, i] as const));
+  for (const [key, raw] of Object.entries(params)) {
+    if (!key.startsWith('input.')) continue;
+    const id = key.slice('input.'.length);
+    const spec = byId.get(id);
+    // `--input.<vectorId>.<field>=n`: hand the dotted key to the engine verbatim. It is
+    // never reserved, so parseUrlState's own vector-field branch resolves it.
+    if (!spec && id.includes('.') && byId.has(id.slice(0, id.lastIndexOf('.')))) {
+      const { values } = parseUrlState(new URLSearchParams([[id, raw]]).toString(), manifest as Parameters<typeof parseUrlState>[1]);
+      Object.assign(out, values);
+      continue;
+    }
+    if (!spec) {
+      warn('UNKNOWN_INPUT', `--input.${id} names no input of this tool and had no effect.`);
+      continue;
+    }
+    const alias = '__lollyinput';
+    const { values } = parseUrlState(new URLSearchParams([[alias, raw]]).toString(), {
+      inputs: [{ ...spec, urlKey: alias }],
+    } as Parameters<typeof parseUrlState>[1]);
+    if (id in values) out[id] = values[id];
+  }
+  return out;
+}
 
 /**
  * Warn about `--flags` that match nothing — no declared input, no `urlKey` alias, no
@@ -700,17 +939,19 @@ export function unknownFlags(
   }
   const prefixes = inputs.map(i => `${i.id}.`);   // --<vector>.<field>=<number>
   return Object.keys(params).filter(
-    k => !known.has(k) && !RESERVED.has(k) && !CLI_FLAGS.has(k) && !prefixes.some(p => k.startsWith(p)),
+    k => !known.has(k) && !RESERVED.has(k) && !CLI_FLAGS.has(k) && !prefixes.some(p => k.startsWith(p))
+      // --input.<id>= is the explicit input namespace; explicitInputValues reports the
+      // ones that name nothing, with a message that fits what was actually asked for.
+      && !k.startsWith('input.'),
   );
 }
 
 function warnUnknownFlags(params: Record<string, string>, manifest: { id: string; inputs?: Array<{ id: string; urlKey?: string }> }): void {
   const unknown = unknownFlags(params, manifest);
   if (!unknown.length) return;
-  process.stderr.write(
-    `Warning: ${unknown.map(k => `--${k}`).join(', ')} ${unknown.length === 1 ? 'is not an input' : 'are not inputs'} of "${manifest.id}" ` +
-    `and had no effect. Run \`lolly ${manifest.id}\` to list its inputs.\n`,
-  );
+  warn('UNKNOWN_FLAG',
+    `${unknown.map(k => `--${k}`).join(', ')} ${unknown.length === 1 ? 'is not an input' : 'are not inputs'} of "${manifest.id}" ` +
+    `and had no effect. Run \`lolly describe ${manifest.id}\` to list its inputs.`);
 }
 
 /**
@@ -725,11 +966,13 @@ function warnUnknownFlags(params: Record<string, string>, manifest: { id: string
  * Readable params riding alongside `zx` are re-appended after the decoded state, so
  * on-visit flags still apply — the same rule expandQuery and the web shell follow.
  */
-async function decryptLinkQuery(query: string, password: string | undefined, consumesPlainPassword: boolean): Promise<string> {
+export async function decryptLinkQuery(query: string, password: string | undefined, consumesPlainPassword: boolean): Promise<string> {
   const sp = new URLSearchParams(query);
   const token = sp.get(ENC_PARAM) ?? '';
   if (!password) {
-    throw new Error(
+    // Exit 6 (AUTH), not a generic failure: a pipeline that can supply a password
+    // should be able to tell "I need the password" from "the render broke".
+    throw authError(
       'This is a password-protected link (zx=…) and no password was given. ' +
       'Pass --link-password=<password>. Nothing was rendered: without the password the state cannot be read, ' +
       'and rendering the tool at its defaults instead would hand you a different document under the right filename.',
@@ -737,7 +980,7 @@ async function decryptLinkQuery(query: string, password: string | undefined, con
   }
   const decoded = await unpackEncrypted(token, password);
   if (decoded == null) {
-    throw new Error(
+    throw authError(
       'Could not open the password-protected link (zx=…): the password is wrong, or the token is truncated or tampered with. ' +
       'Nothing was rendered: falling back to the tool\'s defaults would hand you a different document under the right filename.',
     );
@@ -751,34 +994,64 @@ async function decryptLinkQuery(query: string, password: string | undefined, con
   return extras.length ? `${decoded}&${extras.join('&')}` : decoded;
 }
 
+/**
+ * Read one file out of the ACTIVE PROFILE's `tools/` view — the single reader every
+ * entry point in this shell hands to `loadTool`. It was duplicated inline in two
+ * places; `preflight.ts` needs a third, and three copies of a path join is how one of
+ * them ends up reading a different tree.
+ */
+export async function readToolFile(path: string): Promise<string> {
+  return readFile(join(REPO_ROOT, 'tools', path), 'utf8');
+}
+
 // Load a tool, turning a missing tool dir (ENOENT on tool.json) into a clean, THROWN
 // error (not a process.exit) — so a batch loop can catch a bad-toolId row, honour
 // --keep-going, and still print its summary, while the single-run path's top-level
 // catch prints the same message and exits 1 as before. The substituted message hides
 // the internal absolute path + errno the raw readFile ENOENT would leak.
-async function loadToolOrThrow(toolId: string, fetchFile: (path: string) => Promise<string>, opts: { lang?: Lang } = {}) {
+export async function loadToolOrThrow(toolId: string, fetchFile: (path: string) => Promise<string>, opts: { lang?: Lang } = {}) {
   try {
     return await loadTool(toolId, fetchFile, opts);
   } catch (e) {
     if ((e as { code?: string })?.code === 'ENOENT') {
-      throw new Error(`Tool not found: ${toolId}. Run with no args to list tools.`);
+      // Exit 2 (USAGE): a tool id that does not exist is a wrong invocation, not a
+      // failed render — a CI loop must be able to tell them apart (contract §5.1).
+      throw usageError(`Tool not found: ${toolId}. Run \`lolly list\` to list tools.`, 'UNKNOWN_TOOL');
     }
     throw e;
   }
 }
 
-// Read + parse a --profile=path.json file into a profile object. A missing or
-// malformed file is non-fatal: warn and return {} so the render still proceeds.
-async function readProfile(profilePath: string | undefined): Promise<Profile> {
+/**
+ * Read + parse a `--user-profile=path.json` file.
+ *
+ * A missing or unparseable file is a USAGE ERROR (exit 2), not a warning (contract B2).
+ * It used to warn and render anyway, which shipped assets with every `bindToProfile`
+ * field unfilled — the name, the email, the role all quietly blank, in a file that
+ * looks finished. If you named a profile, you meant it.
+ */
+export async function readProfile(profilePath: string | undefined): Promise<Profile> {
   if (!profilePath) return {};
+  let raw: string;
   try {
-    const raw = await readFile(resolve(process.cwd(), profilePath), 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    raw = await readFile(resolve(process.cwd(), profilePath), 'utf8');
   } catch (e) {
-    process.stderr.write(`Warning: could not load profile "${profilePath}" (${(e as Error).message}); continuing without it.\n`);
-    return {};
+    throw usageError(
+      `Could not read the profile file "${profilePath}" (${(e as Error).message}). Nothing was rendered: ` +
+      'continuing without it would silently leave every bindToProfile field empty.',
+      'PROFILE_UNREADABLE',
+    );
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw usageError(`The profile file "${profilePath}" is not valid JSON (${(e as Error).message}).`, 'PROFILE_INVALID');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw usageError(`The profile file "${profilePath}" must contain a JSON object.`, 'PROFILE_INVALID');
+  }
+  return parsed as Profile;
 }
 
 // True when the tool captures a live URL (url-shot) — its export drives Chromium
@@ -790,7 +1063,7 @@ function isCaptureTool(manifest: { capabilities?: string[] }): boolean {
 // Infer an export format from an --output filename's extension, but only when it
 // names a format the tool actually declares — otherwise return null so the
 // caller falls back to formats[0]. (.jpeg normalises to the canonical 'jpg'.)
-function formatFromOutput(path: string, formats: string[]): string | null {
+export function formatFromOutput(path: string, formats: string[]): string | null {
   const ext = extname(path).slice(1).toLowerCase();
   if (!ext) return null;
   // Match against the tool's declared formats, tolerating the jpg/jpeg synonym split
@@ -824,15 +1097,74 @@ function mimeForFile(path: string): string {
   }
 }
 
-export async function listToolsCli(): Promise<void> {
+/** One tool as `list --json` reports it: what it is, and whether it runs HERE. */
+export interface ToolListing {
+  id: string;
+  name: string;
+  description?: string;
+  status: string;
+  category?: string;
+  formats: string[];
+  capabilities: string[];
+  /** Capabilities this shell cannot provide. Non-empty means `run` exits 3. */
+  unmetCapabilities: string[];
+  /** Declared formats this shell can produce with no browser. */
+  nativeFormats: string[];
+  /**
+   * Can this installation run the tool at all? False when a capability is unmet — the
+   * honest pre-flight answer for an agent, so it never has to learn it from an exit 3.
+   * A tool with no native format is still `true`: the browser tier may be present, and
+   * `environment.tiers.browser` says whether it is.
+   */
+  runnableHere: boolean;
+}
+
+export async function listToolsCli(opts: { json?: boolean } = {}): Promise<void> {
   const indexPath = join(REPO_ROOT, 'catalog', 'tools', 'index.json');
   const index = JSON.parse(await readFile(indexPath, 'utf8')) as {
-    tools: Array<{ id: string; status: string; name: string; description?: string }>;
+    tools: Array<{ id: string; status: string; name: string; description?: string; category?: string; formats?: string[] }>;
   };
-  process.stdout.write('Available tools:\n');
-  for (const t of index.tools) {
-    process.stdout.write(`  ${t.id.padEnd(20)} [${t.status}] ${t.description ?? t.name}\n`);
+  if (!opts.json) {
+    process.stdout.write('Available tools:\n');
+    for (const t of index.tools) {
+      process.stdout.write(`  ${t.id.padEnd(20)} [${t.status}] ${t.description ?? t.name}\n`);
+    }
+    return;
   }
+
+  // The machine listing carries the manifest's `capabilities`, which the generated
+  // index does not, so each manifest is read. A missing/unreadable one degrades to
+  // "no declared capabilities" rather than failing the whole listing: `list` is how an
+  // agent discovers the catalog, and one broken tool must not blind it to the rest.
+  const { NODE_FORMATS } = await import('@lolly-tools/node-shell/raster');
+  const tools: ToolListing[] = await Promise.all(index.tools.map(async (t) => {
+    let capabilities: string[] = [];
+    let formats = t.formats ?? [];
+    try {
+      const m = JSON.parse(await readFile(join(REPO_ROOT, 'tools', t.id, 'tool.json'), 'utf8')) as {
+        capabilities?: string[]; render?: { formats?: string[] };
+      };
+      capabilities = m.capabilities ?? [];
+      formats = m.render?.formats ?? formats;
+    } catch { /* index-derived facts only */ }
+    const unmet = unmetCapabilities({ capabilities });
+    return {
+      id: t.id,
+      name: t.name,
+      ...(t.description ? { description: t.description } : {}),
+      status: t.status,
+      ...(t.category ? { category: t.category } : {}),
+      formats,
+      capabilities,
+      unmetCapabilities: unmet,
+      nativeFormats: formats.filter(f => NODE_FORMATS.includes(f.toLowerCase())),
+      runnableHere: unmet.length === 0,
+    };
+  }));
+
+  const { describeEnvironment } = await import('./environment.ts');
+  const { emitResult } = await import('./envelope.ts');
+  await emitResult({ tools, environment: await describeEnvironment() });
 }
 
 /**
@@ -841,19 +1173,42 @@ export async function listToolsCli(): Promise<void> {
  * nothing surfaced the ids; this does. Optional substring query (id/name/tags) and a
  * `--type=` filter (raster/vector/lottie/palette/tokens/font/audio/video).
  */
-export async function listAssetsCli(query?: string, opts: { type?: string } = {}): Promise<void> {
+export async function listAssetsCli(query?: string, opts: { type?: string; json?: boolean } = {}): Promise<void> {
   const indexPath = join(REPO_ROOT, 'catalog', 'assets', 'index.json');
   const index = JSON.parse(await readFile(indexPath, 'utf8')) as {
     assets: Array<{ id: string; name?: string; type: string; tags?: string[] }>;
   };
   const q = (query ?? '').trim().toLowerCase();
   const type = opts.type?.trim().toLowerCase();
+  // A `--type=` no asset in this catalog has is a USAGE error, not "0 of 428". A typo'd
+  // filter returning an empty list and exit 0 is the silent-wrong-answer class: a script
+  // doing `lolly assets --type=rastor --json | jq '.result.assets[].id'` would emit
+  // nothing and carry on. The known set is derived from the catalog, not hard-coded,
+  // because a brand pack may ship types this shell has never heard of.
+  if (type) {
+    const known = [...new Set(index.assets.map(a => a.type.toLowerCase()))].sort();
+    if (!known.includes(type)) {
+      throw usageError(`No catalog asset has type "${opts.type}". This catalog has: ${known.join(', ')}.`, 'UNKNOWN_ASSET_TYPE');
+    }
+  }
   const matches = index.assets.filter(a => {
     if (type && a.type.toLowerCase() !== type) return false;
     if (!q) return true;
     const hay = `${a.id} ${a.name ?? ''} ${(a.tags ?? []).join(' ')}`.toLowerCase();
     return hay.includes(q);
   });
+  if (opts.json) {
+    const { emitResult } = await import('./envelope.ts');
+    // `total` and the echoed query are part of the answer: a filtered listing that
+    // returns nothing is different from a catalog that has nothing.
+    await emitResult({
+      assets: matches,
+      total: index.assets.length,
+      ...(q ? { query } : {}),
+      ...(type ? { type } : {}),
+    });
+    return;
+  }
   const width = Math.min(48, matches.reduce((w, a) => Math.max(w, a.id.length), 0));
   process.stdout.write(
     `Catalog assets${type ? ` [${type}]` : ''}${q ? ` matching "${query}"` : ''} — ${matches.length} of ${index.assets.length}:\n`,
@@ -866,12 +1221,12 @@ export async function listAssetsCli(query?: string, opts: { type?: string } = {}
   );
 }
 
-export async function showToolInputsCli(toolId: string, opts: { lang?: Lang } = {}): Promise<void> {
-  const fetchFile = async (path: string): Promise<string> => {
-    const full = join(REPO_ROOT, 'tools', path);
-    return readFile(full, 'utf8');
-  };
-  const tool = await loadToolOrThrow(toolId, fetchFile, opts);
+export async function showToolInputsCli(toolId: string, opts: { lang?: Lang; json?: boolean } = {}): Promise<void> {
+  const tool = await loadToolOrThrow(toolId, readToolFile, opts);
+  if (opts.json) {
+    await describeToolJson(tool.manifest as DescribableManifest);
+    return;
+  }
   process.stdout.write(`${tool.manifest.name} (${tool.manifest.id} v${tool.manifest.version})\n`);
   process.stdout.write(`Status: ${tool.manifest.status}\n`);
   process.stdout.write(`Formats: ${tool.manifest.render.formats.join(', ')}\n\n`);
@@ -885,6 +1240,70 @@ export async function showToolInputsCli(toolId: string, opts: { lang?: Lang } = 
     if (hint) process.stdout.write(`      ↳ ${hint}\n`);
   }
   process.stdout.write(`\nUsage:\n  lolly ${tool.manifest.id} --some-input=value --output=file.${tool.manifest.render.formats[0]}\n`);
+}
+
+/** The manifest slice `describe --json` reports (kept structural, like the rest of run.ts). */
+interface DescribableManifest {
+  id: string;
+  name: string;
+  version: string;
+  status: string;
+  description?: string;
+  capabilities?: string[];
+  hooks?: Record<string, unknown> | null;
+  inputs: Array<{ id: string; type: string; urlKey?: string }>;
+  render: { formats: string[]; width?: number; height?: number };
+}
+
+/**
+ * `describe <tool> --json` — the machine half of the tool schema, and the thing an
+ * agent needs to build an invocation without guessing.
+ *
+ * Each input is its DECLARED spec (the manifest is the source of truth for input
+ * semantics — inventing a second shape here is how the web shell and the CLI would
+ * drift) plus three computed facts the manifest cannot know:
+ *
+ *   • `flag` — the actual CLI spelling. For the nine shipped inputs whose id collides
+ *     with a reserved export param (`width`, `height`, `format`), that is
+ *     `--input.<id>=`, not `--<id>=`, and an agent reading `--width` off the manifest
+ *     would silently set the export size instead of the input (contract B7).
+ *   • `urlParam` — the compact `urlKey` alias when the tool declares one.
+ *   • `syntax` — how the non-scalar types are expressed on a command line.
+ */
+async function describeToolJson(manifest: DescribableManifest): Promise<void> {
+  const unmet = unmetCapabilities(manifest);
+  const inputs = (manifest.inputs ?? []).map(i => {
+    const shadowed = RESERVED.has(i.id) || (i.urlKey ? RESERVED.has(i.urlKey) : false);
+    const syntax = syntaxHint(i.id, i.type);
+    return {
+      ...i,
+      flag: shadowed ? `--input.${i.id}=` : `--${i.id}=`,
+      ...(shadowed ? { shadowedByReservedParam: true } : {}),
+      ...(i.urlKey ? { urlParam: i.urlKey } : {}),
+      ...(syntax ? { syntax } : {}),
+    };
+  });
+  const { emitResult } = await import('./envelope.ts');
+  await emitResult({
+    tool: {
+      id: manifest.id,
+      name: manifest.name,
+      version: manifest.version,
+      status: manifest.status,
+      ...(manifest.description ? { description: manifest.description } : {}),
+      formats: manifest.render.formats,
+      ...(manifest.render.width ? { width: manifest.render.width } : {}),
+      ...(manifest.render.height ? { height: manifest.render.height } : {}),
+      capabilities: manifest.capabilities ?? [],
+      nativeFormats: manifest.render.formats.filter(f => NODE_FORMATS.includes(f.toLowerCase())),
+      unmetCapabilities: unmet,
+      runnableHere: unmet.length === 0,
+      // An experimental tool watermarks every export (the engine forces it). A script
+      // that would ship the output needs to know that BEFORE it renders.
+      watermarked: manifest.status === 'experimental',
+    },
+    inputs,
+  });
 }
 
 /** URL-mode syntax hint for the non-scalar input types, so the CLI's `<tool>` help
