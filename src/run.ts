@@ -71,7 +71,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
   // under a different transport, so a packed share link must run identically here
   // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(new URLSearchParams(params).toString());
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth } = parseUrlState(
     query,
     tool.manifest,
   );
@@ -255,6 +255,13 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
     const qual = (v: number | null | undefined): string | number | undefined => (typeof v === 'number' && v > 0 ? (u !== 'px' ? `${v}${u}` : v) : undefined);
     const exportOpts: ExportOpts & { password?: string } = { width: qual(width), height: qual(height) };
     if (u !== 'px') exportOpts.dpi = dpi || 300;
+    // --depth=8|16|float requests the export's bits per channel (--depth=auto, the
+    // default, carries nothing). A request, not a promise: depth follows provenance,
+    // so the writer emits deep bits only where the pipeline produced them. Threaded
+    // here only — no CLI export path consumes it yet (the web shell's HDR PNG
+    // does; the CLI's first will be the Phase B EXR/deep-TIFF node formats —
+    // plans/deeprichpixels.md §10).
+    if (depth !== 'auto') exportOpts.depth = depth;
     // --password= sets the standard PDF's open-password (basic lock).
     if (targetFormat === 'pdf' && password) exportOpts.password = password;
 
