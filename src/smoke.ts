@@ -212,7 +212,10 @@ export async function smokeCli({ only, format, out }: SmokeArgs = {}): Promise<n
  */
 async function renderHtmlHeadless(toolId: string, outputPath: string): Promise<void> {
   const jsdom = await import('jsdom');
-  const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>');
+  const { quietVirtualConsole } = await import('./run.ts');
+  const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>', {
+    virtualConsole: quietVirtualConsole(jsdom),
+  });
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   globalThis.Element = dom.window.Element;

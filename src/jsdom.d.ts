@@ -5,8 +5,19 @@
 // used at runtime that jsdom doesn't implement). This is an ambient module
 // declaration (a non-module .d.ts), not an augmentation of the untyped package.
 declare module 'jsdom' {
+  /** The subset of jsdom's VirtualConsole the CLI uses: an EventEmitter whose
+   *  'jsdomError' + console-level events we listen to (see quietVirtualConsole in
+   *  run.ts, which stops a designed feature-detection path printing a stack trace). */
+  export class VirtualConsole {
+    on(event: 'jsdomError', listener: (err: Error) => void): this;
+    on(event: 'error' | 'warn' | 'info' | 'log' | 'debug', listener: (...args: unknown[]) => void): this;
+    sendTo(console: Console): this;
+  }
+  export interface JSDOMOptions {
+    virtualConsole?: VirtualConsole;
+  }
   export class JSDOM {
-    constructor(html?: string);
+    constructor(html?: string, options?: JSDOMOptions);
     readonly window: Window & typeof globalThis;
   }
 }

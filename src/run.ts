@@ -91,10 +91,51 @@ type CliExportOpts = ExportOpts & {
  *  `palette` (its brand primaries), not the full var set applyBrandVars writes. */
 const BRAND_HDR_SLOTS = ['primary', 'secondary'] as const;
 
+/**
+ * A jsdom virtual console that does not shout about jsdom being jsdom.
+ *
+ * Every `filter-*` run printed a ten-frame stack trace ending in a stray `undefined`
+ * for a render that SUCCEEDED: the tools feature-detect canvas by calling getContext,
+ * jsdom answers with a "Not implemented" jsdomError, and jsdom's default console sink
+ * dumps it. The detection then works exactly as designed and the export escalates to
+ * the tier that can raster. Printing a stack trace for a designed code path trains
+ * people to ignore this shell's stderr, which is the last thing it can afford.
+ *
+ * So: "Not implemented: X" is collapsed to one line naming X (printed once per feature),
+ * every OTHER jsdomError still prints in full, and the tool's own console output is
+ * forwarded untouched. Set DEBUG to get the raw traces back.
+ */
+export function quietVirtualConsole(jsdom: typeof import('jsdom')): InstanceType<typeof jsdom.VirtualConsole> {
+  const vc = new jsdom.VirtualConsole();
+  const seen = new Set<string>();
+  vc.on('jsdomError', (err: Error) => {
+    const notImplemented = /^Not implemented:\s*(.+)$/.exec(firstLine(err.message));
+    if (notImplemented && !process.env.DEBUG) {
+      const what = notImplemented[1]!;
+      if (seen.has(what)) return;
+      seen.add(what);
+      process.stderr.write(`Note: jsdom has no ${what} — the tool's own feature detection handles this.\n`);
+      return;
+    }
+    process.stderr.write(`[jsdom] ${process.env.DEBUG ? (err.stack ?? err.message) : firstLine(err.message)}\n`);
+  });
+  // The tool's own console.* still reaches the operator (a hook's warning is real
+  // information); only jsdom's internal complaints are filtered above.
+  for (const level of ['error', 'warn', 'info', 'log', 'debug'] as const) {
+    vc.on(level, (...args: unknown[]) => {
+      if (level === 'debug' && !process.env.DEBUG) return;
+      process.stderr.write(`[${level}] ${args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}\n`);
+    });
+  }
+  return vc;
+}
+
 export async function runToolCli({ toolId, params, outputPath, format, share, verify, htmlFallback }: RunToolCliArgs): Promise<void> {
   // Lazy import — jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
-  const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>');
+  const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>', {
+    virtualConsole: quietVirtualConsole(jsdom),
+  });
   // Expose enough globals for the engine + Handlebars to work happily.
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
@@ -435,16 +476,24 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       return bytes;
     };
 
-    // Print prep on a path that cannot apply it. bleed/marks geometry lives in the web
-    // shell (Tier B reads ?bleed/?marks off the export URL); the DOM-free engine export
-    // has nowhere to put it, so asking for it here used to be a byte-for-byte no-op with
-    // no warning. Refuse instead — for a print job a silently un-bled file is exactly the
-    // kind of plausible wrong output that gets discovered at the press.
-    if ((bleed || marksRaw) && NODE_FORMATS.includes(targetFormat.toLowerCase()) && !VECTOR_ESCALATABLE.has(targetFormat.toLowerCase())) {
+    // PRINT PREP THAT CANNOT BE APPLIED IS A REFUSAL, NOT A SHRUG.
+    //
+    // `--bleed=3mm --marks=crop,reg` used to produce output byte-identical to a run
+    // without them, silently, exit 0 — the Tier-A resvg PNG path never saw the values at
+    // all. For a print job that is the worst possible failure mode: it is discovered at
+    // the press, on someone else's money.
+    //
+    // The honest boundary is narrow. computePrintGeometry is wired into exactly three
+    // renderers in the web shell (renderPdf, renderCmykPdf, renderCmykTiff — see
+    // shells/web/src/bridge/export.ts); nothing applies a bleed box or crop marks to a
+    // PNG, an SVG or an EPS on any tier. So the allowlist is those three, and every other
+    // format refuses by name rather than accepting flags it will ignore.
+    if ((bleed || marksRaw) && !PRINT_PREP_FORMATS.has(targetFormat.toLowerCase())) {
       throw new Error(
-        `--bleed/--marks cannot be applied to "${targetFormat}" here: print geometry is added by the full render tier, ` +
-        `and "${targetFormat}" is produced directly by the engine, which has nowhere to put a bleed box or crop marks. ` +
-        'Export pdf, pdf-cmyk, cmyk-tiff or png (which route through that tier), or drop the flags. No file was written.',
+        `--bleed/--marks cannot be applied to "${targetFormat}". Bleed boxes and crop/registration marks are ` +
+        `page geometry, and only the page formats carry them: ${[...PRINT_PREP_FORMATS].join(', ')}. ` +
+        `Accepting the flags here would give you a file identical to one exported without them, with nothing to say so. ` +
+        'Export one of those formats, or drop the flags. No file was written.',
       );
     }
 
@@ -458,10 +507,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
         // for PNG from an SVG-native tool, else Tier B (the scoped Chromium driving the built
         // web shell). `usedBrowser` tells us to tear the browser + server down before exit.
         const domFree = NODE_FORMATS.includes(targetFormat.toLowerCase());
-        // …EXCEPT: a vector format asked for WITH print prep has to start at the browser tier,
-        // because that is the only tier that can honour bleed/marks (see the refusal above).
-        const forceBrowser = domFree && !!(bleed || marksRaw);
-        if (domFree && !forceBrowser) {
+        if (domFree) {
           const blob = await runtime.export(canvas, targetFormat, exportOpts);
           buf = Buffer.from(await blob.arrayBuffer());
           // The DOM-free render is this runtime's own output — a swallowed onInit failure
@@ -502,6 +548,14 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       //
       // The HTML artifact is still available, but only when asked for by name
       // (--html-fallback), because then the caller knows to expect it.
+      //
+      // FIRST, though: a render that is genuinely BROKEN is not a tier limitation and must
+      // pass through untouched. A RenderIntegrityError (a hook threw) or a DeepSourceError
+      // (float asked for over an 8-bit source) says something true about this render, and
+      // neither an HTML file nor a "Cannot export" wrapper would be an honest answer — the
+      // wrapper would even hand `lolly smoke` the FORMAT_UNAVAILABLE marker and get a
+      // broken tool quietly re-rendered as html.
+      if (REAL_RENDER_FAILURES.has((e as Error)?.name)) throw e;
       if (!htmlFallback || finalFormat === 'html') throw exportFailure(targetFormat, e as Error, domFreeError);
       const blob = await runtime.export(canvas, 'html', {});
       buf = Buffer.from(await blob.arrayBuffer());
@@ -580,6 +634,22 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
  * So a DOM-free failure on one of these is a reason to escalate, not to refuse.
  */
 const VECTOR_ESCALATABLE = new Set(['svg', 'emf', 'eps', 'eps-cmyk', 'dxf']);
+
+/**
+ * The only formats that can carry `--bleed` / `--marks`. Derived from where
+ * computePrintGeometry is actually called in shells/web/src/bridge/export.ts (renderPdf,
+ * renderCmykPdf, renderCmykTiff) — not from what sounds print-ish. If a fourth renderer
+ * ever grows print geometry, add it here or the CLI will keep refusing it.
+ */
+const PRINT_PREP_FORMATS = new Set(['pdf', 'pdf-cmyk', 'cmyk-tiff']);
+
+/**
+ * Failures that describe THIS RENDER rather than this shell's tiers. They are never
+ * escalated, never wrapped, and never answered with an HTML file — each already says
+ * something true and actionable, and each is worded to survive being handled by name
+ * rather than by phrase (see render-integrity.ts and raster.ts's deepSourceRefusal).
+ */
+const REAL_RENDER_FAILURES = new Set(['RenderIntegrityError', 'DeepSourceError', 'FormatMismatchError']);
 
 const firstLine = (s: string): string => String(s ?? '').split('\n')[0]!.trim();
 

@@ -62,7 +62,7 @@ npm run smoke                                            # render every catalogu
 
 `npm run cli` is `node shells/cli/bin/lolly.ts`. The `--` matters, otherwise npm eats the flags.
 
-It reads the **active content profile's** views at the repo root, so `npm run profile` tells you which tools it can see. Read `bin/lolly.ts`'s header comment for the current flag set, including `--share`, `--c2pa`, `--bleed`, `--marks`, `--imprint`, `--durable` and `--press-profile`.
+It reads the **active content profile's** views at the repo root, so `npm run profile` tells you which tools it can see. `lolly --help` prints the full flag set, including `--share`, `--c2pa`, `--bleed`, `--marks`, `--imprint`, `--durable`, `--press-profile`, `--link-password` and `--html-fallback`.
 
 ## Build it
 
@@ -72,6 +72,10 @@ There is nothing to build. Node runs the TypeScript directly. Typechecking is `t
 
 - **`--profile` is the user-profile file, not a press condition.** The CMYK press condition is `--press-profile`. This trips people up often enough that `bin/lolly.ts` calls it out inline.
 - **State does not persist.** Every invocation starts with an empty in-memory store, so there are no saved sessions here.
+- **A format that cannot be produced here is an error, not a different file.** Asking for a format this shell cannot make fails with a non-zero exit and writes nothing at the requested path. It used to write HTML under a renamed output and exit 0, which meant a pipeline asking for PDF could receive HTML and never know. `--html-fallback` opts back into the HTML artifact, under a `.html` name and with a warning saying so.
+- **The output is sniffed against the requested format before it is written.** Headless Chromium has no AV1 encoder, so `--export=avif` used to receive PNG bytes and write them under the `.avif` name. Bytes that are demonstrably a different container are now refused.
+- **`--bleed` and `--marks` only apply to `pdf`, `pdf-cmyk` and `cmyk-tiff`.** Those are the three renderers wired to the engine's print geometry. Any other format refuses the flags rather than accepting them and producing a file identical to one exported without them.
+- **A `zx=` link needs `--link-password`.** A missing or wrong password is an error. It never falls back to rendering the tool at its defaults, which would be a different document under the right filename.
 - **`lolly validate` is a real verifier, not a stub.** It runs the same engine Content Credentials modules as the web `/verify` view, accepts `--trust-anchor`, and with `--deep` also does a neural pixel-watermark scan, which is Tier B and so needs the browser and the built web shell.
 - **A tool ID can never be `validate`, `install-browser`, `assets`, `batch` or `smoke`.** Those five are reserved subcommands, matched before the argv is treated as a tool ID.
 - Tier B's Chromium is downloaded on request by `lolly install-browser` into a scope this shell owns. It is not your system Chrome and it is not fetched implicitly on first render.
