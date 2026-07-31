@@ -12,7 +12,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parseDimension, toCssLength, toCssPx, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
+import { parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -92,6 +92,11 @@ interface CliExportRenderOpts extends ExportOpts {
   dataText?: string;
   dataMime?: string;
   unit?: string;
+  /** The `hdr=` request, forwarded by run.ts. The canonical HostV1 ExportOpts has no
+   *  HDR dials (the web shell carries its own extension too — shells/web/src/bridge/
+   *  export.ts's ExportOpts), so this is the CLI's local extension of the same shape,
+   *  in url-mode's 0–100 author dial units. Absent ⇒ SDR ⇒ exr/hdr refuse. */
+  hdr?: { targets?: readonly string[]; peakNits?: number; reach?: number; lift?: number; richness?: number } | null;
 }
 
 /** Element type of parseIconThemesDoc's result — derived so no engine-internal
@@ -459,7 +464,42 @@ function rootSvgOf(node: Element | null): Element | null {
         const { text } = emitDxf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         return new Blob([text], { type: 'image/vnd.dxf' });
       }
-      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use a text/data format (html, svg, emf, eps, dxf, json, csv, ics, vcf), or run the Tauri-bundled CLI for raster/pdf/zip.`);
+      if (format === 'exr' || format === 'hdr') {
+        // The pro float formats (plans/deeprichpixels.md §6 B3, surfaced CLI-first per
+        // §10 item 4): the engine's own OpenEXR / Radiance writers over a resvg raster
+        // of THIS tool's SVG. Browser-free, so they belong on this side of the tier
+        // split rather than in raster.ts's Tier B.
+        //
+        // Two refusals, in order, both loud (their wording deliberately avoids run.ts's
+        // "fall back to HTML" signature — a pro-format request must never quietly
+        // become a .html file):
+        //   1. no root <svg> → this tool needs layout, which jsdom cannot do;
+        //   2. no `hdr=` → the raster is 8-bit sRGB and float would be padding.
+        const svg = rootSvgOf(node);
+        if (!svg) throw new Error('EXR/HDR export needs the template\'s root drawable to be a vector image (HTML-layout tools have no browser-free raster here — use the desktop app or the web shell)');
+        const raw = w.XMLSerializer ? new w.XMLSerializer().serializeToString(svg) : svg.outerHTML;
+        // Lazy: pulls in resvg (a native module) and the engine's EXR/Radiance writers
+        // only when a pro format is actually asked for.
+        const { renderDeepRaster, deepFormatMime } = await import('../../../packages/node-shell/src/raster.ts');
+        // Physical units convert through the engine's own unit maths at the export
+        // DPI, exactly like every other CLI format (--width=210 --unit=mm --dpi=300).
+        const dpi = opts.dpi ?? 300;
+        const px = (v: string | number | undefined, fallback: number): number => {
+          const d = parseDimension(v);
+          return d ? Math.max(1, Math.round(toPixels(d, dpi))) : fallback;
+        };
+        const { bytes, mime } = await renderDeepRaster({
+          svg: raw,
+          width: px(opts.width, parseFloat(svg.getAttribute('width') as string) || 1280),
+          height: px(opts.height, parseFloat(svg.getAttribute('height') as string) || 720),
+          format,
+          hdr: opts.hdr ?? null,
+          depth: opts.depth,
+          log: (level, message) => host.log(level, message),
+        });
+        return new Blob([bytes as BlobPart], { type: mime || deepFormatMime(format) });
+      }
+      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use a text/data format (html, svg, emf, eps, dxf, json, csv, ics, vcf), a pro float format (exr, hdr — with hdr=1), or run the Tauri-bundled CLI for raster/pdf/zip.`);
     },
     async download() {
       throw new Error('CLI cannot trigger a browser download — pipe the blob to a file via --output');
@@ -675,6 +715,10 @@ function mimeFor(format: string): string {
     case 'webp': return 'image/webp';
     case 'emf': return 'image/emf';
     case 'eps': case 'eps-cmyk': return 'application/postscript';
+    // Pro float formats (plans/deeprichpixels.md §6 B3). `image/x-exr` is the de-facto
+    // OpenEXR type (never IANA-registered); `image/vnd.radiance` IS registered for RGBE.
+    case 'exr': return 'image/x-exr';
+    case 'hdr': return 'image/vnd.radiance';
     case 'json': return 'application/json';
     default: return 'application/octet-stream';
   }

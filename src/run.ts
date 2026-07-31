@@ -16,7 +16,7 @@ import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
 // scoped Chromium).
-import { NODE_FORMATS, pxDims, matchedExportFormat } from '@lolly-tools/node-shell/raster';
+import { NODE_FORMATS, DEEP_FORMATS, pxDims, matchedExportFormat } from '@lolly-tools/node-shell/raster';
 import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 // Fail loud: never write a degenerate file + exit 0 when the render silently failed.
@@ -35,9 +35,37 @@ interface RunToolCliArgs {
   format?: string;
   /** --share/--link: print a shareable lolly.tools URL for the inputs instead of rendering. */
   share?: boolean;
+  /** --verify: for a transform tool, print a per-file line saying the tool's own
+   *  export checks ran and none failed. A failed check throws (exit 1) either way. */
+  verify?: boolean;
 }
 
-export async function runToolCli({ toolId, params, outputPath, format, share }: RunToolCliArgs): Promise<void> {
+/**
+ * A transform hook that cannot run in the Node host says so in its thrown sentence
+ * (redact: "needs a browser canvas" / "not available in this app"). Those exports
+ * are re-run in the real web shell (Tier B) instead of failing — a rebuild-the-pixels
+ * utility has no honest jsdom path. A verification failure reads nothing like this,
+ * so a failed gate still fails loudly.
+ */
+export function needsBrowserTier(message: string): boolean {
+  return /browser canvas|not available in this app|needs a browser|requires a browser/i.test(message);
+}
+
+/** ExportOpts plus the two CLI-local extensions run.ts threads to the bridge:
+ *  the PDF open-password and the `hdr=` dials (the canonical HostV1 ExportOpts
+ *  carries neither — the web shell extends it the same way). */
+type CliExportOpts = ExportOpts & {
+  password?: string;
+  hdr?: { targets?: readonly string[]; peakNits?: number; reach?: number; lift?: number; richness?: number };
+};
+
+/** Brand semantic slots offered to the HDR view transform as boost targets. The
+ *  bright, saturated end of the brand — a brand's `surface`/`text`/`muted` are the
+ *  page, not the thing that should glow. Mirrors what the web export panel sends as
+ *  `palette` (its brand primaries), not the full var set applyBrandVars writes. */
+const BRAND_HDR_SLOTS = ['primary', 'secondary'] as const;
+
+export async function runToolCli({ toolId, params, outputPath, format, share, verify }: RunToolCliArgs): Promise<void> {
   // Lazy import — jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>');
@@ -71,7 +99,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
   // under a different transport, so a packed share link must run identically here
   // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(new URLSearchParams(params).toString());
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr } = parseUrlState(
     query,
     tool.manifest,
   );
@@ -181,21 +209,64 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
   // don't use a render format at all — short-circuit before the format checks.
   if (tool.manifest.hooks?.exportFile) {
     const runtime = await createRuntime(tool, host, values);
-    const { bytes, filename } = await runtime.exportFile();
-    const buf = Buffer.from((bytes as { buffer?: ArrayBufferLike }).buffer ?? (bytes as ArrayBuffer));
+    const fileIn = (tool.manifest.inputs ?? []).find(i => i.type === 'file');
+    let tier = 'node';
+    let bytes: Uint8Array;
+    let filename: string | undefined;
+    let usedTransformBrowser = false;
+    try {
+      const res = await runtime.exportFile();
+      bytes = res.bytes as Uint8Array;
+      filename = res.filename;
+    } catch (e) {
+      const msg = (e as Error).message;
+      const ref = fileIn ? (values[fileIn.id] as { name?: string; mime?: string; bytes?: Uint8Array } | undefined) : undefined;
+      if (!needsBrowserTier(msg) || !fileIn || !ref?.bytes) throw e;
+      // The utility rebuilds real pixels (canvas / PDF page render), which the Node
+      // host cannot do. Re-run the SAME hook in the scoped browser driving the built
+      // web shell — the tool's export gate runs there, on these bytes. When no browser
+      // or no built shell is present, transformViaWebShell names exactly what's missing.
+      process.stderr.write(`Note: ${msg} Running it in the browser tier instead.\n`);
+      const { transformViaWebShell } = await import('@lolly-tools/node-shell/webshell-render');
+      const out = await transformViaWebShell({
+        toolId: tool.manifest.id,
+        fileInputId: fileIn.id,
+        file: { name: ref.name || 'input', mime: ref.mime || 'application/octet-stream', bytes: ref.bytes },
+        query: serializeUrlState(runtime.getModel()),
+      });
+      bytes = out.bytes;
+      filename = out.filename;
+      tier = 'browser';
+      usedTransformBrowser = true;
+    }
+    // Copy the VIEW (not `.buffer`): the browser tier hands back a Uint8Array whose
+    // backing buffer may be larger than the file, and `.buffer` would write the slack.
+    const buf = Buffer.from(bytes);
     const dest = outputPath || (filename ? resolve(process.cwd(), filename) : null);
     if (dest) {
       await writeFile(dest, buf);
       // One-line result summary (input→output delta + the tool's a11y summary) so the
       // headless path reports what a transform did, not just a byte count. Matches the
       // TUI's utility result panel.
-      const fileInput = (tool.manifest.inputs ?? []).find(i => i.type === 'file');
-      const inBytes = fileInput ? (values[fileInput.id] as { size?: number } | undefined)?.size : undefined;
+      const inBytes = fileIn ? (values[fileIn.id] as { size?: number } | undefined)?.size : undefined;
       const label = runtime.getHydratedString(tool.manifest.a11yLabel).trim();
       const delta = typeof inBytes === 'number' ? `${inBytes.toLocaleString()} → ${buf.length.toLocaleString()} bytes` : `${buf.length.toLocaleString()} bytes`;
       process.stderr.write(`✓ ${label ? label + ' — ' : ''}${delta} → ${dest}\n`);
     } else {
       process.stdout.write(buf);
+    }
+    // --verify: one line per file. The tool's exportFile is what runs the checks and
+    // it throws on a failed one (nothing is written, exit 1), so reaching here means
+    // no check failed. Stated exactly that way — this does not re-run anything.
+    if (verify) {
+      const srcName = fileIn ? (values[fileIn.id] as { name?: string } | undefined)?.name ?? '(input)' : '(no file input)';
+      process.stderr.write(`✓ verified: ${tool.manifest.id} exported ${srcName} with no failed check (tier: ${tier})\n`);
+    }
+    if (usedTransformBrowser) {
+      const [{ closeBrowser }, { closeWebShell }] = await Promise.all([
+        import('@lolly-tools/node-shell/browsers'), import('@lolly-tools/node-shell/webshell-render'),
+      ]);
+      await Promise.all([closeBrowser(), closeWebShell()]);
     }
     return;
   }
@@ -215,10 +286,18 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
     matchedExportFormat(tool.manifest, runtime.getModel() as Array<{ id: string; value: unknown }>) ??
     tool.manifest.render.formats[0]!;
 
-  if (!tool.manifest.render.formats.includes(targetFormat)) {
+  // The PRO float formats (exr / .hdr) are admitted for ANY tool, declared or not.
+  // plans/deeprichpixels.md §10 rules out per-tool depth declarations — depth is an
+  // export concern, tools stay declarative — so a tool.json listing "exr" would be
+  // exactly the mistake the plan names (and would drag the schema enum plus every
+  // per-brand generated catalog index along with it). The honest gate is at render
+  // time instead: a tool with no vector root, or a request with no float source,
+  // refuses with a message that says which. See DEEP_FORMATS in node-shell/raster.ts.
+  if (!tool.manifest.render.formats.includes(targetFormat) && !DEEP_FORMATS.includes(targetFormat as never)) {
     throw new Error(
       `Tool "${toolId}" does not support format "${targetFormat}". ` +
-      `Supported: ${tool.manifest.render.formats.join(', ')}`,
+      `Supported: ${tool.manifest.render.formats.join(', ')}` +
+      ` (plus the pro float formats ${DEEP_FORMATS.join(', ')}, which need hdr=1)`,
     );
   }
 
@@ -253,15 +332,33 @@ export async function runToolCli({ toolId, params, outputPath, format, share }: 
     // default. (e.g. --width=210 --height=297 --unit=mm --export=svg → A4.)
     const u = unit || 'px';
     const qual = (v: number | null | undefined): string | number | undefined => (typeof v === 'number' && v > 0 ? (u !== 'px' ? `${v}${u}` : v) : undefined);
-    const exportOpts: ExportOpts & { password?: string } = { width: qual(width), height: qual(height) };
+    const exportOpts: CliExportOpts = { width: qual(width), height: qual(height) };
     if (u !== 'px') exportOpts.dpi = dpi || 300;
     // --depth=8|16|float requests the export's bits per channel (--depth=auto, the
     // default, carries nothing). A request, not a promise: depth follows provenance,
-    // so the writer emits deep bits only where the pipeline produced them. Threaded
-    // here only — no CLI export path consumes it yet (the web shell's HDR PNG
-    // does; the CLI's first will be the Phase B EXR/deep-TIFF node formats —
-    // plans/deeprichpixels.md §10).
+    // so the writer emits deep bits only where the pipeline produced them.
+    //
+    // CONSUMED on the CLI as of Phase B3: --export=exr --depth=float writes 32-bit
+    // FLOAT samples instead of the default 16-bit HALF. Every other combination is
+    // logged and ignored rather than obeyed — EXR has no integer sample type, Radiance
+    // is RGBE by definition, and no CLI raster path has a >8-bit SOURCE yet, so
+    // --depth=16 on png/tiff here would be padding. See plans/deeprichpixels.md §10
+    // and the note in docs/url-mode.md.
     if (depth !== 'auto') exportOpts.depth = depth;
+    // --hdr=… routes the render through the engine's float HDR view transform. Today
+    // that is the CLI's ONLY float pixel source, so it is what exr/.hdr require; the
+    // brand's semantic colours (already resolved onto the canvas by applyBrandVars
+    // above) are the boost targets, so a CLI EXR glows on the same colours a web HDR
+    // export does. Values that are not hex (an oklch() slot) are skipped by hdr.ts's
+    // parser rather than failing the export.
+    if (hdr) {
+      exportOpts.hdr = {
+        targets: BRAND_HDR_SLOTS
+          .map(s => canvas.style.getPropertyValue(`--brand-${s}`).trim())
+          .filter(v => /^#[0-9a-fA-F]{3,8}$/.test(v)),
+        peakNits: hdr.peakNits, reach: hdr.reach, lift: hdr.lift, richness: hdr.richness,
+      };
+    }
     // --password= sets the standard PDF's open-password (basic lock).
     if (targetFormat === 'pdf' && password) exportOpts.password = password;
 
@@ -423,6 +520,10 @@ function formatFromOutput(path: string, formats: string[]): string | null {
   if (formats.includes(ext)) return ext;
   const alias = ext === 'jpeg' ? 'jpg' : ext === 'jpg' ? 'jpeg' : null;
   if (alias && formats.includes(alias)) return alias;
+  // The pro float formats are never declared per tool (see the format gate above), so
+  // `--output=poster.exr` has to be honoured off the extension alone or it would
+  // silently fall back to formats[0] and write an SVG into a .exr file.
+  if (DEEP_FORMATS.includes(ext as never)) return ext;
   return null;
 }
 

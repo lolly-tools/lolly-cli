@@ -10,6 +10,9 @@
  *   lolly <tool-id> --foo=bar --output=f.svg # run, write to file
  *   lolly <tool-id> --foo=bar --share        # print a shareable lolly.tools link (no render)
  *   lolly <tool-id> --foo=bar --export=svg   # explicit format
+ *   lolly redact --source=./f.pdf --bars=1,40,60,200,24 --output=./out.pdf --verify
+ *                                            # file utilities: one instruction string, any file
+ *                                            # (--verify prints a per-file line when no check failed)
  *   lolly <tool-id> --foo=bar --c2pa=30      # stamp Content Credentials
  *                                                 # (7|30|90|365-day ephemeral cert; =off forces off)
  *   lolly <tool-id> --export=pdf --bleed=3mm --marks=crop,reg,bars  # print prep (pdf/pdf-cmyk/cmyk-tiff)
@@ -116,14 +119,14 @@ try {
       merged['press-profile'] ??= merged.profile;
       delete merged.profile;
     }
-    const { output, export: fmt, share: urlShare, link: urlLink, ...params } = merged;
+    const { output, export: fmt, share: urlShare, link: urlLink, verify: urlVerify, ...params } = merged;
     process.stderr.write(`→ ${ref.toolId}${ref.format ? ` (${ref.format})` : ''} from URL\n`);
     // In URL mode `export` is a bare PRESENCE flag ("auto-download on open") — the web
     // Share dialog's default link emits `…&format=png&export`, so URLSearchParams gives
     // export=''. That empty string is NOT a format: coalesce it to undefined so the URL's
     // own `format=` param (kept in `params`, read by runToolCli) or the path-segment
     // format wins. An explicit CLI `--export=svg` is non-empty and still overrides.
-    await runToolCli({ toolId: ref.toolId, params, outputPath: output, format: (fmt || undefined) ?? ref.format ?? undefined, share: urlShare !== undefined || urlLink !== undefined });
+    await runToolCli({ toolId: ref.toolId, params, outputPath: output, format: (fmt || undefined) ?? ref.format ?? undefined, share: urlShare !== undefined || urlLink !== undefined, verify: urlVerify !== undefined });
     exit(0);
   }
 
@@ -139,8 +142,8 @@ try {
     exit(0);
   }
 
-  const { output, export: format, share, link, ...params } = flags;
-  await runToolCli({ toolId, params, outputPath: output, format, share: share !== undefined || link !== undefined });
+  const { output, export: format, share, link, verify, ...params } = flags;
+  await runToolCli({ toolId, params, outputPath: output, format, share: share !== undefined || link !== undefined, verify: verify !== undefined });
 } catch (e) {
   const err = e as { message?: string; validationErrors?: Array<{ path: string; message: string }>; stack?: string };
   process.stderr.write(`Error: ${err.message}\n`);
