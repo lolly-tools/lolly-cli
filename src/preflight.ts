@@ -18,9 +18,23 @@
  * everything downstream of `parseUrlState` is the same code path `runToolCli`
  * walks: the same `zx=` decrypt, the same `z=` expansion, the same reserved-param
  * parse, the same format resolution, the same `--input.<id>=` namespace and the
- * same reserved-flag-shadows-an-input warning. Its own flags are TWO (`--json`,
- * `--strict`); three more are RECOGNISED SO THEY CAN BE REFUSED (`--rate-card`,
- * `--batch`, `--out`) rather than silently dropped by the flag parser.
+ * same reserved-flag-shadows-an-input warning. Its own flags are FIVE (`--json`,
+ * `--strict`, `--rate-card`, `--run-length`, `--use-expired-rates`); two more are
+ * RECOGNISED SO THEY CAN BE REFUSED (`--batch`, `--out`) rather than silently
+ * dropped by the flag parser.
+ *
+ * ## Money appears ONLY with `--rate-card`, and only from the card
+ *
+ * With no `--rate-card` this command counts and never mentions money — unchanged.
+ * WITH `--rate-card=<file.json>` and a costable job it multiplies the card's rates
+ * by the quantities it COUNTED (`computeCost`, in integer minor units) and prints
+ * the arithmetic: one row per multiplication, the minimum charge as a visible row,
+ * a coverage line, and a scalar total ONLY when every counted line is priced —
+ * always rendered WITH its source inline, never a bare figure. It NEVER originates,
+ * defaults, infers or approximates a price. A ceiling count stays "up to" all the
+ * way to the total. `--rate-card` is a device-local FILE flag, never a URL param:
+ * a pasted link can carry neither a card nor money (`canShowMoney`, §5). Expired
+ * rates suppress money (counts show) unless `--use-expired-rates` is given.
  *
  * ## What it does NOT do
  *
@@ -30,8 +44,10 @@
  * NO FILE IS EVER WRITTEN. The report goes to stdout; redirect it if you want it
  * on disk.
  *
- * There is no currency, no rate, no price and no monetary concept in this file,
- * and none may be added. Preflight counts; it does not cost.
+ * A currency figure appears in this file ONLY when a `--rate-card` is supplied, and
+ * every such figure comes FROM that card (currency and rates both). Nothing is ever
+ * originated, defaulted, inferred or approximated. A number Lolly made up and
+ * presented as money is worse than showing nothing.
  * See `plans/preflight-and-cost.md` §6 and §8.
  *
  * ## Streams and exit codes
@@ -66,14 +82,21 @@
  * machine-readable `needs`, and they exit 0 permanently.
  */
 
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   createRuntime, buildInputModel, expandQuery, hasEncryptedState,
   isUnit, normalizeLang, parseDimension, parseToolUrl, parseUrlState, preflight,
+  c2paDefaultOn, imprintDefaultOn, isImprintFormat,
+  computeCost, parseRateCard, isRateCardError, validateRateCard,
 } from '@lolly/engine';
 import type {
   Fact, Finding, PreflightInput, PreflightJob, PreflightReport, PreflightSize,
-  PreflightSwatch, Severity,
+  PreflightSwatch, Severity, CostWorking, CostRow, RateCard,
 } from '@lolly/engine';
+import { canShowMoney, formatMoney, COST_DISCLAIMER } from '@lolly-tools/core';
+import type { MoneyContext, SerializedCost, SerializedWorkingRow } from '@lolly-tools/core';
 import { matchedExportFormat } from '@lolly-tools/node-shell/raster';
 import {
   decryptLinkQuery, explicitInputValues, formatFromOutput, loadToolOrThrow,
@@ -108,8 +131,11 @@ const paint = (code: string, s: string): string => (tty ? code + s + RESET : s);
 const clean = (v: unknown): string => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
 
 /** This subcommand's own flags. Removed from the params before they are read as
- *  URL state, so they are never mistaken for tool inputs. */
-const OWN_FLAGS = ['json', 'strict'] as const;
+ *  URL state, so they are never mistaken for tool inputs. `rate-card`/`run-length`/
+ *  `use-expired-rates` are read off the RAW `flags` (never off the URL query), so a
+ *  pasted link's `?rate-card=` can never bring money — a card is a device-local
+ *  file, and the flag names it locally. */
+const OWN_FLAGS = ['json', 'strict', 'rate-card', 'run-length', 'use-expired-rates'] as const;
 
 /**
  * Flags that are RECOGNISED so they can be refused.
@@ -120,8 +146,9 @@ const OWN_FLAGS = ['json', 'strict'] as const;
  * subcommand exists to prevent. Refusing costs two lines.
  */
 const REFUSED: Record<string, string> = {
-  'rate-card': '--rate-card is not implemented (preflight counts only; there are no rates and no money).',
-  rates: '--rates is not implemented (preflight counts only; there are no rates and no money).',
+  // `--rates` stays refused: the flag is `--rate-card`, never `--rate`/`--rates`
+  // (docs/cli.md's `--profile`/`--press-profile` collision — do not add a third).
+  rates: '--rates is not a flag. The rate card flag is --rate-card=<file.json>.',
   batch: 'batch preflight is not implemented yet. Run `lolly preflight <tool-id>` for a single job.',
   // Removed before GA rather than frozen. It was a THIRD spelling for "where output
   // goes" (`run --output`, `batch --out-dir`, `preflight --out`), and it split one
@@ -188,6 +215,14 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   // `--strict=false` a strict run.
   const json = isOn(flags.json);
   const strict = isOn(flags.strict);
+
+  // Read off the RAW `flags`, NEVER `params`: a rate card is a device-local file the
+  // user names on THIS machine, so a pasted link's `?rate-card=` must not select one
+  // and cannot bring money. `--run-length` feeds a `perUnit` line (never defaulted to
+  // 1); `--use-expired-rates` opts in past a card's `validUntil`.
+  const cardPathFlag = flags['rate-card'];
+  const runLengthFlag = flags['run-length'];
+  const useExpiredAnyway = isOn(flags['use-expired-rates']);
 
   // A pasted lolly.tools link is a fully-configured job: parse it into a toolId +
   // query and preflight it as if the query were --flags. Any --flag after the URL
@@ -280,6 +315,9 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   // render would not produce is worse than not preflighting at all. It is the permanent,
   // frozen escape hatch, so it has to work on the command that checks the escape hatch.
   Object.assign(values, explicitInputValues(params, tool.manifest));
+  // `--no-provenance` (contract §12 O2): the one-word bare render. Read the same way
+  // runToolCli reads it, so the report and the render agree.
+  const bare = isOn(params['no-provenance']);
 
   // ── The model. `createRuntime` runs onInit, so this is the POST-INIT model and a
   // paginate count is exact rather than a ceiling. If onInit cannot run headlessly
@@ -340,8 +378,12 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
       pressProfile: { known: true, value: params['press-profile'] ?? params.profile ?? null },
       cuts,
       password: Boolean(password),
-      c2pa: c2pa == null ? { known: false, why: 'not-set' } : { known: true, value: c2pa.on },
-      imprint: imprint == null ? { known: false, why: 'not-set' } : { known: true, value: imprint },
+      // The RESOLVED settings, not the raw params. Both marks are default-on for a CLI
+      // render (contract §12 O2), so reporting an absent flag as `not-set` would have
+      // preflight describe a job the render would not produce — the one thing this
+      // command exists to prevent. `--no-provenance` resolves both to false.
+      c2pa: { known: true, value: bare ? false : c2pa ? c2pa.on : c2paDefaultOn(tool.manifest) },
+      imprint: { known: true, value: bare ? false : (imprint ?? imprintDefaultOn(tool.manifest)) && isImprintFormat(format) },
       durable,
       hdr: Boolean(hdr),
       ...(flags.output ? { filename: flags.output } : {}),
@@ -357,26 +399,104 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   // COLLECTION, not rules over the job, and the engine must stay unable to know
   // them. Info-severity, so they land after every engine finding in the existing
   // severity order and no re-sort is needed.
-  const report: PreflightReport = caveats.length
+  let report: PreflightReport = caveats.length
     ? { ...base, findings: [...base.findings, ...caveats], gaps: [...base.gaps, ...caveats] }
     : base;
 
   const errors = report.findings.filter(f => f.severity === 'error').length;
   const warns = report.findings.filter(f => f.severity === 'warn').length;
-  // REFUSED (4), not FAILED (1): the check ran and said no. See the header.
+  // REFUSED (4), not FAILED (1): the check ran and said no. See the header. The cost
+  // pass NEVER changes the exit: a missing/expired/partial rate card is the normal
+  // state, and money is not a protective check (header, §7 exit codes).
   const exit = errors > 0 || (strict && warns > 0) ? EXIT.REFUSED : EXIT.OK;
+
+  // ── The cost pass. Only reached with `--rate-card`; counts-only otherwise. It
+  // multiplies the card's rates by report.counts and gates the result through
+  // `canShowMoney`. When money is SUPPRESSED (expired without opt-in), the `cost`
+  // member is ABSENT (rule 9: no currency figure sits in a serialised artifact even
+  // one being hidden) and an info `cost.suppressed` finding carries the reason.
+  let cost: SerializedCost | undefined;
+  let costHuman = '';
+  if (cardPathFlag !== undefined) {
+    const loaded = await loadCardForPreflight(cardPathFlag);
+    if ('refused' in loaded) {
+      process.stderr.write(`Warning: ${clean(loaded.refused)} Showing counts only.\n`);
+    } else {
+      const { card, digest } = loaded;
+      const runLength = runLengthFlag !== undefined && /^\d+$/.test(runLengthFlag)
+        ? Number(runLengthFlag) : undefined;
+      const working = computeCost(card, report.counts, runLength !== undefined ? { runLength } : {});
+      // A `--rate-card` selection is ALWAYS own-session on the CLI: it is a local
+      // file path, never a URL param, so `selectionFromUrl` is false and a
+      // confidential card the user named locally still shows. The only suppressor
+      // reachable here is expiry without `--use-expired-rates`.
+      const ctx: MoneyContext = {
+        hasCard: true,
+        selectionFromUrl: false,
+        revealedThisSession: false,
+        cardConfidential: card.confidential,
+        expired: working.expired,
+        useExpiredAnyway,
+      };
+      if (canShowMoney(ctx)) {
+        cost = serializeCost(working, card, digest, useExpiredAnyway);
+        costHuman = humanCost(working, card);
+      } else {
+        // Suppressed (expired without opt-in). No cost member; a named info finding.
+        const when = card.issuer.validUntil ? ` on ${clean(card.issuer.validUntil)}` : '';
+        const suppressed: Finding = {
+          id: 'cost.suppressed',
+          severity: 'info',
+          message: `These rates expired${when}. Showing counts only. Pass --use-expired-rates to cost with them anyway.`,
+          evidence: { reason: 'expired', validUntil: card.issuer.validUntil ?? null },
+        };
+        report = { ...report, findings: [...report.findings, suppressed], gaps: [...report.gaps, suppressed] };
+      }
+    }
+  }
 
   // One envelope, every command (contract §5.2). preflight used to emit its own
   // `$format: lolly-preflight-*` document, which made it the second machine shape in a
-  // CLI whose whole machine promise is that there is one. The report itself is
-  // unchanged — it is now `result` inside the envelope.
+  // CLI whose whole machine promise is that there is one. The report is `result`
+  // inside the envelope; the money object rides as a SIBLING `cost` member beside
+  // `findings`/`counts`/`gaps` (never inside `PreflightReport`, rule 9). Absent when
+  // no card, refused, or suppressed.
   if (json) {
     const { emitResult } = await import('./envelope.ts');
-    await emitResult(report, exit);
+    await emitResult(cost ? { ...report, cost } : report, exit);
     return exit;
   }
   process.stdout.write(humanReport(report, job, tool.manifest));
+  if (costHuman) process.stdout.write(costHuman);
   return exit;
+}
+
+/**
+ * Read + validate a `--rate-card=<file.json>`. Returns the parsed card + its content
+ * digest, or a `refused` reason (unreadable, or one of `parseRateCard`'s three
+ * refusals). Never throws — a bad card WARNS and the report still prints counts.
+ */
+async function loadCardForPreflight(
+  cardPath: string,
+): Promise<{ card: RateCard; digest: string } | { refused: string }> {
+  if (cardPath === '') return { refused: '--rate-card needs a file path (--rate-card=./acme-2026.json).' };
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(resolve(process.cwd(), cardPath));
+  } catch (e) {
+    return { refused: `Could not read the rate card "${cardPath}" (${(e as Error).message}).` };
+  }
+  const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+  const card = parseRateCard(bytes, digest, validateRateCard);
+  if (isRateCardError(card)) {
+    const why = card.error === 'no-priced-lines'
+      ? 'it validates but has no priced lines, so nothing can be costed with it'
+      : card.error === 'example-card'
+        ? 'it is the shipped example — copy it and type your printer’s own rates'
+        : 'it is not a rate card this can read';
+    return { refused: `The rate card "${cardPath}" was refused (${card.error}): ${why}.` };
+  }
+  return { card, digest };
 }
 
 /**
@@ -539,3 +659,128 @@ const fmtNum = (n: number): string => {
   const r = Math.round(n * 10000) / 10000;
   return String(r);
 };
+
+// ─── The cost block (only reached with --rate-card) ──────────────────────────
+
+/** Format integer minor units with the CARD's currency and the reader's locale.
+ *  There is no default currency: `card.currency` is proven usable by parseRateCard. */
+const money = (minorUnits: number, currency: string): string =>
+  formatMoney({ minorUnits, currency });
+
+/**
+ * Serialise a computed working into the rule-9 money object — the `cost` SIBLING
+ * member. `estimatedTotalFromSuppliedRates` is a self-describing `MonetaryFigure`
+ * (or `null` on partial coverage); there is NO field named `total`; every caveat
+ * (`kind`/`isQuote`/`disclaimer`/`ratesFrom`/`bound`/coverage/`excludesTax`) is a
+ * sibling in the same object, so the hedge travels with the figure.
+ */
+function serializeCost(w: CostWorking, card: RateCard, digest: string, useExpiredAnyway: boolean): SerializedCost {
+  const workingRows: SerializedWorkingRow[] = w.rows.map((r) => ({
+    lineId: r.lineId,
+    kind: r.kind,
+    quantityKind: r.quantityKind,
+    quantity: r.quantity,
+    bound: r.bound,
+    ...(r.unit !== undefined ? { unit: r.unit } : {}),
+    ...(r.box !== undefined ? { box: r.box } : {}),
+    unitRate: r.unitRate,
+    subtotal: r.subtotal,
+    subtotalBound: r.subtotalBound,
+  }));
+  return {
+    kind: 'estimate',
+    isQuote: false,
+    estimatedTotalFromSuppliedRates: w.estimatedTotal,
+    bound: w.bound,
+    coversLines: w.coveredLines,
+    ofLines: w.totalLines,
+    excludesTax: !card.taxIncluded,
+    // §5: money reached here past the card's validUntil only via an explicit opt-in,
+    // so this figure is stamped as computed from lapsed rates — inseparable from it.
+    usedExpiredRates: w.expired && useExpiredAnyway,
+    disclaimer: COST_DISCLAIMER,
+    ratesFrom: {
+      issuer: card.issuer.name ?? '',
+      issued: card.issuer.issued ?? '',
+      validUntil: card.issuer.validUntil ?? null,
+      digest,
+      verified: false,
+    },
+    uncosted: w.uncosted.map((u) => ({ lineId: u.lineId, reason: u.reason })),
+    workingRows,
+    adjustments: w.adjustments.map((a) => ({
+      lineId: a.lineId, kind: a.kind, reason: a.reason, from: a.from, to: a.to, delta: a.delta,
+    })),
+  };
+}
+
+/** One `count × rate = line` row, the rate cell NAMING its card line id + kind so a
+ *  reader can point at the one that is wrong. A ceiling subtotal renders `up to …`. */
+function costRowLine(r: CostRow, currency: string): string {
+  const noun = r.unit ?? (r.quantityKind === 'job' ? 'job' : r.quantityKind === 'runLength' ? 'unit' : '');
+  const box = r.box ? ` ${r.box}` : '';
+  const qty = noun ? `${fmtNum(r.quantity)} ${noun}${box}` : fmtNum(r.quantity);
+  const brk = r.breakApplied
+    ? paint(DIM, r.breakApplied.mode === 'flat'
+      ? ` [tier ≥${r.breakApplied.min}]`
+      : ` [band ${r.breakApplied.min}–${r.breakApplied.upTo}]`)
+    : '';
+  const sub = money(r.subtotal, currency);
+  const shown = r.subtotalBound === 'ceiling' ? `up to ${sub}` : sub;
+  return `${paint(DIM, `${clean(r.lineId)} (${clean(r.kind)})`)}  ${qty} × ${money(r.unitRate, currency)}${brk} = ${shown}`;
+}
+
+/**
+ * The human cost block, appended below the counts. One row per multiplication, the
+ * minimum charge as a visible row, a scalar total ONLY on full coverage (always
+ * rendered WITH its source inline), else the "N of M not priced" headline with no
+ * scalar total — nothing in the layout offers a single figure to copy (rule 2).
+ */
+function humanCost(w: CostWorking, card: RateCard): string {
+  const cur = w.currency;
+  const out: string[] = [''];
+  out.push(paint(BOLD, 'Cost, worked out from your rate card'));
+
+  // §5 reported speech: the file's own claims, never provenance, never a bare
+  // attribution beside a figure.
+  const issuer = clean(card.issuer.name ?? '');
+  const issued = clean(card.issuer.issued ?? '');
+  if (issuer || issued) {
+    out.push(`  ${paint(DIM, `The file says: ${[issuer, issued].filter(Boolean).join(', ')}. Lolly has not verified this.`)}`);
+  }
+
+  for (const r of w.rows) out.push(`  ${paint(DIM, '·')} ${costRowLine(r, cur)}`);
+  // rule 3: the minimum charge is a VISIBLE row, never a silent floor.
+  for (const a of w.adjustments) {
+    out.push(`  ${paint(DIM, '·')} ${'minimum charge applied'.padEnd(34)} ${paint(DIM, `+ ${money(a.delta, cur)}`)}`);
+  }
+
+  out.push('');
+  if (w.estimatedTotal) {
+    // Full coverage → a scalar total, ALWAYS with its source inline. A ceiling bound
+    // rides through the multiplication as "up to" (rule 4).
+    const totalStr = money(w.estimatedTotal.minorUnits, cur);
+    const shown = w.bound === 'ceiling' ? `up to ${totalStr}` : totalStr;
+    const date = issued || '(date not stated)';
+    out.push(`  ${paint(GREEN, `${shown} using ${issuer || 'your rate card'} rates dated ${date}`)}`);
+    // §5: an opt-in past validUntil stamps the figure with the expiry date, so a lapsed
+    // total is never read as a current one.
+    if (w.expired) {
+      const when = card.issuer.validUntil ? ` on ${clean(card.issuer.validUntil)}` : '';
+      out.push(`  ${paint(YELLOW, `These rates expired${when}. This figure was computed from lapsed prices.`)}`);
+    }
+  } else {
+    // Partial → NO scalar total: the gap is the headline (rule 2). Per-line
+    // arithmetic above stays visible; nothing here sums to a copyable figure.
+    const unpriced = w.uncosted.length;
+    const pressRun = w.uncosted.some((u) => u.reason === 'no-sheet-count') ? ', including the press run' : '';
+    out.push(`  ${paint(YELLOW, `${unpriced} of ${w.totalLines} cost lines are not priced by this card${pressRun}. Lolly is not showing a total.`)}`);
+    for (const u of w.uncosted) {
+      out.push(`  ${paint(DIM, '·')} ${clean(u.lineId)} ${paint(DIM, `— not priced (${clean(u.reason)})`)}`);
+    }
+  }
+
+  out.push(`  ${paint(DIM, `Covers ${w.coveredLines} of ${w.totalLines} cost lines.${card.taxIncluded ? '' : ' Excludes tax.'}`)}`);
+  out.push(`  ${paint(DIM, COST_DISCLAIMER)}`);
+  return out.join('\n') + '\n';
+}

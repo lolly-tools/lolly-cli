@@ -170,7 +170,13 @@ export async function smokeCli({ only, format, out, json = false }: SmokeArgs = 
         // Lazy import: runToolCli drags in jsdom + the full bridge; a --format typo or
         // an all-skipped run shouldn't pay for it.
         const { runToolCli } = await import('./run.ts');
-        await runToolCli({ toolId: id, params: {}, outputPath, format: fmt });
+        // PROVENANCE OFF, deliberately (contract §12 O2). A render carries Content
+        // Credentials and the Imprint by default, and both embed a fresh timestamp:
+        // smoke is a CI gate that renders the whole catalog and compares nothing but
+        // "did bytes arrive", so signing every one of them would buy nothing, cost a
+        // key operation per tool, and make the run's output undiffable. The decision is
+        // recorded, not implicit: machine paths default to a bare render.
+        await runToolCli({ toolId: id, params: { 'no-provenance': '1' }, outputPath, format: fmt });
       } else {
         await renderHtmlHeadless(id, outputPath);
       }

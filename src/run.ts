@@ -11,13 +11,17 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard } from '@lolly/engine';
+import { createHash } from 'node:crypto';
 import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
 // scoped Chromium).
 import { NODE_FORMATS, DEEP_FORMATS, pxDims, matchedExportFormat } from '@lolly-tools/node-shell/raster';
 import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
+// The enrolled signing identity (key + x5chain) — type only here; the module itself is
+// imported lazily in the render path so a run without --sign-key never loads it.
+import type { SigningIdentity } from '@lolly-tools/node-shell/signing-identity';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 // Fail loud: never write a degenerate file + exit 0 when the render silently failed.
 import { assertRenderOk } from '@lolly-tools/node-shell/render-integrity';
@@ -28,6 +32,7 @@ import { needsBrowserTier } from '@lolly-tools/node-shell/browser-tier';
 // url-shot: capture a live page via the scoped Chromium (shared with the TUI).
 import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
 import { createCliBridge, applyBrandVars, CLI_CAPABILITIES } from './bridge.ts';
+import { isOn } from './args.ts';
 import type { Profile, ExportOpts } from '@lolly-tools/core/host-v1';
 import { note, warn, writeOut, isStrict } from './output.ts';
 import { usageError, unavailableHere, refused, authError } from './exit-codes.ts';
@@ -197,6 +202,12 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // against the manifest; they were simply swallowed, so a typo (`--urll=…`) rendered
   // defaults with no hint that the value went nowhere.
   warnUnknownFlags(params, tool.manifest);
+
+  // `--rate-card=path.json`: load + validate the printer's own card and confirm it in
+  // one line. Warn-and-continue on any problem — the card is not required to render, and
+  // this phase computes no prices with it (that is a later phase). Read here, after the
+  // host is up, so a bad card never blocks the render.
+  await loadRateCardCli(params['rate-card']);
 
   // A password-protected share link (`zx=…`) carries the WHOLE state encrypted. The web
   // shell prompts for the password; the CLI takes it as a flag. Decrypt BEFORE expandQuery,
@@ -536,10 +547,112 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     );
   }
 
+  // ── provenance: DEFAULT ON, exactly as the web shell does (contract §12 O2) ──
+  //
+  // Decided by Andy on 2026-08-01, overruling this record's own recommendation: a file
+  // made from the terminal carries the same marks as the same file made in the app.
+  // Both defaults are read off the tool's MANIFEST through the engine's one policy
+  // module (c2paDefaultOn / imprintDefaultOn), which is also what the web shell's
+  // export sheet reads — so `render.c2pa:false` and `privacy:'on-device'` opt a tool
+  // out on every surface at once, and the two surfaces cannot drift.
+  //
+  // THE COST, STATED RATHER THAN DISCOVERED: both marks embed a fresh timestamp, so
+  // two identical invocations no longer produce identical bytes. `--no-provenance` is
+  // the one word that buys determinism back (and `--c2pa=off` / `--imprint=0` are the
+  // per-mark spellings); `smoke` and `batch` apply it themselves, being machine paths
+  // where reproducibility is the point. docs/cli.md says all of this beside the
+  // byte-reproducibility table.
+  const bareRender = isOn(params['no-provenance']);
+  if (bareRender && (c2pa?.on || imprint === true || durable)) {
+    throw usageError(
+      '--no-provenance turns every provenance mark off, but this run also asks for one explicitly. ' +
+      'Drop --no-provenance, or drop the --c2pa/--imprint/--durable that contradicts it.',
+      'CONFLICTING_FLAGS',
+    );
+  }
+  // An explicit setting always wins over the manifest default; `null` from parseUrlState
+  // is what "nobody said" means.
+  const wantC2pa = bareRender ? false : c2pa ? c2pa.on : c2paDefaultOn(tool.manifest);
+  // Whether the CALLER asked for Content Credentials, as opposed to inheriting them.
+  // Every "could not stamp" message below is gated on this: a warning is a promise the
+  // run did not keep, and under --strict it is an exit code, so a default nobody chose
+  // must never produce one (`--export=dxf` would otherwise fail every strict pipeline
+  // with "format has no C2PA container").
+  const askedC2pa = c2pa?.on === true;
+  // The Imprint only exists for formats whose bytes can carry it; on the rest the
+  // setting is simply not applicable, which is not the same as being refused.
+  const wantImprint = (bareRender ? false : imprint ?? imprintDefaultOn(tool.manifest))
+    && isImprintFormat(targetFormat);
+  if (imprint === true && !isImprintFormat(targetFormat)) {
+    warn('IMPRINT_UNAVAILABLE',
+      `--imprint has no effect on "${targetFormat}": the Lolly Imprint lives in pixels, and this format carries none. ` +
+      `It applies to ${IMPRINT_FORMATS.join(', ')}.`);
+  }
+  const wantDurable = bareRender ? false : durable;
+
+  // ── the enrolled signing identity ────────────────────────────────────────────
+  //
+  // Without one, every CLI export is signed by a fresh anonymous self-signed
+  // certificate and reads `signingCredential.untrusted` however the verifier is
+  // pinned — which made contract §12 O1 (the terminal pins the Lolly CA root) a
+  // decision with nothing to apply it to. `--sign-key`/`--sign-cert` (or the
+  // $LOLLY_SIGN_* environment) supply a real key + x5chain instead.
+  //
+  // ADDITIVE BY CONSTRUCTION: with nothing configured resolveSigningIdentity
+  // returns null and the ephemeral path below is byte-for-byte what it was.
+  //
+  // Everything that can be misconfigured is caught HERE, before a pixel is
+  // rendered: a key that does not match its certificate would otherwise produce a
+  // perfectly well-formed file that no verifier can validate, discovered by the
+  // recipient rather than by the person who signed it.
+  const askedIdentity = Boolean(params['sign-key'] || params['sign-cert']);
+  if (bareRender && askedIdentity) {
+    throw usageError(
+      '--no-provenance turns every provenance mark off, but --sign-key/--sign-cert asks for a signed credential. ' +
+      'Drop one of them.',
+      'CONFLICTING_FLAGS',
+    );
+  }
+  let identity: SigningIdentity | null = null;
+  if (!bareRender) {
+    const { resolveSigningIdentity, SigningIdentityError, describeIdentity } = await import('@lolly-tools/node-shell/signing-identity');
+    try {
+      identity = await resolveSigningIdentity({
+        keyPath: params['sign-key'],
+        certPath: params['sign-cert'],
+        promptPassword: async () => {
+          const { promptPassphrase } = await import('./prompt.ts');
+          return promptPassphrase('Passphrase for the signing key');
+        },
+      });
+    } catch (e) {
+      if (!(e instanceof SigningIdentityError)) throw e;
+      // A wrong/missing passphrase is exit 6 (AUTH) so a pipeline can tell "give me
+      // the secret" from "you configured this wrong" (exit 2). Everything else is a
+      // setup error, which is what USAGE means.
+      throw e.code.startsWith('SIGN_KEY_PASSWORD')
+        ? authError(e.message, e.code)
+        : usageError(e.message, e.code);
+    }
+    if (identity) {
+      note(describeIdentity(identity));
+      for (const w of identity.warnings) warn('SIGN_CHAIN_INCOMPLETE', `Signing identity: ${w}`, 'gate');
+      if (!wantC2pa) {
+        warn('SIGN_IDENTITY_UNUSED',
+          'A signing identity is configured, but Content Credentials are off for this run ' +
+          `(${c2pa && !c2pa.on ? '--c2pa=off' : `"${tool.manifest.id}" declares render.c2pa:false or privacy:'on-device'`}), so nothing was signed with it.`);
+      }
+    }
+  }
+
   let finalFormat = targetFormat;         // the format actually written (may fall back to html)
   let buf: Buffer;
   let usedBrowser = false;                // a pooled browser was launched → tear it down before exit
   let webShellExport = false;             // the Tier-B web shell produced the bytes → it owns c2pa
+  // The Node tier asked for an Imprint and the frame was below the watermark's
+  // detection floor. Reported, never silently dropped — but as a note, not a warning,
+  // unless the caller explicitly asked for the mark (see the provenance block above).
+  let imprintFloorSkip = false;
 
   if (isCaptureTool(tool.manifest)) {
     // Capture tools (url-shot): drive the scoped Chromium straight at the target URL —
@@ -551,6 +664,10 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       tool.manifest as { render?: { width?: number; height?: number } },
     );
     const cap = await captureUrl(params, targetFormat, cdims);
+    // NOTE, and a knowing gap: a capture is a screenshot of somebody else's page, so
+    // this branch does not embed the Lolly Imprint even when it is on by default. The
+    // credential still rides (it records that Lolly captured these pixels, which is
+    // true); the pixel watermark would assert Lolly rendered the artwork, which is not.
     buf = Buffer.from(cap.bytes);
     usedBrowser = true;                   // captureUrl launched the pooled Chromium
   } else {
@@ -617,19 +734,35 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
       ...(password ? { password } : {}),
       ...(bleed ? { bleed } : {}),
       ...(marksRaw ? { marks: marksRaw } : {}),
-      ...(imprint ? { imprint: true } : {}),
-      ...(durable ? { durable: true } : {}),
+      // ALWAYS forwarded, true or false: the web shell's own Imprint default is on, so
+      // omitting the param would let the browser tier re-apply it after this shell
+      // resolved it off (--imprint=0 / --no-provenance).
+      imprint: wantImprint,
+      ...(wantDurable ? { durable: true } : {}),
       ...(pressProfile ? { pressProfile } : {}),
-      // Forward the c2pa setting so the browser tier stamps it (single authority); the
-      // Node post-stamp below is skipped when the browser ran, avoiding a double-stamp.
-      ...(c2pa != null ? { c2pa: c2pa.on, c2paDays: c2pa.days ?? undefined } : {}),
+      // Forward the RESOLVED c2pa setting so the browser tier stamps it (single
+      // authority); the Node post-stamp below is skipped when the browser ran, avoiding
+      // a double-stamp. Always forwarded now that the default is on: leaving the param
+      // off would let the web shell apply its OWN default and make the CLI's
+      // --c2pa=off a suggestion rather than an instruction.
+      // WITH AN ENROLLED IDENTITY the browser tier must NOT stamp. It signs with its
+      // own ephemeral on-device key (the key is a CryptoKey in this process; there is
+      // no way to hand it to a browser over a URL, and there should not be). So the
+      // credential is suppressed there and applied in Node below, over the finished
+      // bytes, with the identity — the same last-byte-operation rule, one tier later.
+      // The visible trade: the manifest's environment assertion is then the CLI's
+      // (surface: 'cli'), not the web shell's. docs/cli-signing.md says so.
+      c2pa: wantC2pa && !identity, c2paDays: c2pa?.days ?? undefined,
     };
     const viaRaster = async (): Promise<Buffer> => {
       const { renderRaster } = await import('./raster.ts');
       const res = await renderRaster({ runtime, dom, manifest: tool.manifest, format: targetFormat, dims });
       const bytes = Buffer.from(res.bytes);
       usedBrowser = res.usedBrowser;
-      webShellExport = res.usedBrowser; // Tier B == the web shell; it owns c2pa for that path
+      // Tier B == the web shell; it owns c2pa for that path — UNLESS an identity is
+      // configured, in which case it was told `c2pa=off` above and this shell stamps.
+      webShellExport = res.usedBrowser && !identity;
+      if (!res.usedBrowser && wantImprint && res.imprinted === false) imprintFloorSkip = true;
       // Tier A (resvg) rasterises THIS runtime's own SVG, so a swallowed hook failure
       // yields a blank raster — gate it. Tier B re-renders in a real browser whose host
       // has the capability, so hookErrors don't describe those bytes; renderViaWebShell
@@ -768,20 +901,31 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // embedder by format) and before anything is written.
   assertFormatBytes(finalFormat, buf);
 
-  // --c2pa[=7|30|90|365] stamps Content Credentials into the finished bytes —
-  // URL mode's `c2pa` param under the CLI transport (same last-byte-operation
-  // rule as the web shell's stampC2pa). Applies to any C2PA-capable format the
-  // CLI now produces (svg via the engine; png/jpg/pdf via the raster tiers);
-  // off/unsupported is a clear warn-and-continue, mirroring the web shell's
-  // never-fail-the-export policy. Ephemeral on-device signing only — verifiers
-  // report it unverified; the enrolled-identity path is a browser feature (see
-  // docs/content-credentials-identity.md).
-  if (c2pa?.on && !webShellExport && C2PA_FORMATS.includes(finalFormat)) {
+  // Content Credentials are stamped into the finished bytes — URL mode's `c2pa` param
+  // under the CLI transport (same last-byte-operation rule as the web shell's
+  // stampC2pa). Applies to any C2PA-capable format the CLI produces (svg via the
+  // engine; png/jpg/pdf via the raster tiers). ON BY DEFAULT since contract §12 O2;
+  // `--c2pa=off` / `--no-provenance` opt out. Ephemeral on-device signing only —
+  // verifiers report it unverified; the enrolled-identity path is a browser feature
+  // (see docs/content-credentials-identity.md).
+  //
+  // EVERY "not stamped" message here is a `note` unless the caller ASKED for the
+  // credential (askedC2pa). That distinction is the whole of "defaulting on must not
+  // turn an existing refusal into an error": a password-locked PDF and a format with no
+  // C2PA container were already documented skips, and under --strict a `warn` is an
+  // exit code — so inheriting the default must never be the thing that fails a run.
+  // Configuring an identity IS asking for the credential — louder, if anything, since
+  // an unsigned file from a run that supplied a key is a promise this shell did not keep.
+  const sayNotStamped = (code: string, message: string): void => {
+    if (askedC2pa || askedIdentity) warn(code, message);
+    else note(`Note: ${message}`);
+  };
+  if (wantC2pa && !webShellExport && C2PA_FORMATS.includes(finalFormat)) {
     // Only the paths that produced their OWN bytes here (DOM-free svg, Tier-A resvg PNG,
     // url-shot capture) stamp in Node. The Tier-B browser tier already stamped via the
     // forwarded ?c2pa param (exportUrl) — re-stamping would double the credential.
     if (finalFormat === 'pdf' && password) {
-      warn('C2PA_SKIPPED', 'password-locked export — skipping Content Credentials (an encrypted document cannot take the C2PA update).');
+      sayNotStamped('C2PA_SKIPPED', 'password-locked export — skipping Content Credentials (an encrypted document cannot take the C2PA update).');
     } else {
       try {
         // The "what was this made from / where / when / how big" record, matching
@@ -789,15 +933,32 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
         // buildExportC2paOpts also attaches the profile author under `useDetails`).
         const stamped = await embedC2pa(new Uint8Array(buf), finalFormat, buildExportC2paOpts({
           surface: 'cli', manifest: tool.manifest, model: runtime.getModel(),
-          format: finalFormat, dims: { width, height, unit, dpi }, days: c2pa.days, profile,
+          format: finalFormat, dims: { width, height, unit, dpi }, days: c2pa?.days, profile,
+          // Absent = the ephemeral self-signed signer, unchanged. Present, the
+          // credential carries the identity's x5chain and its certificate window.
+          ...(identity ? { signer: identity.signer, signerValidity: { notBefore: identity.notBefore, notAfter: identity.notAfter } } : {}),
         }));
         buf = Buffer.from(stamped.buffer as ArrayBuffer, stamped.byteOffset, stamped.byteLength);
       } catch (e) {
-        warn('C2PA_SKIPPED', `Content Credentials not attached — ${(e as Error).message}`);
+        sayNotStamped('C2PA_SKIPPED', `Content Credentials not attached — ${(e as Error).message}`);
       }
     }
-  } else if (c2pa?.on && !webShellExport) {
+    // `askedIdentity` is qualified by `wantC2pa` here and NOT above: this branch says
+    // "the format cannot carry a credential", which is only true when one was actually
+    // wanted. Without the qualifier, `--sign-key` with `--c2pa=off` claimed SVG has no
+    // C2PA container, which is false and points at the wrong thing — the identity is
+    // unused because credentials are off, which the warning above already says.
+  } else if ((askedC2pa || (askedIdentity && wantC2pa)) && !webShellExport) {
+    // Only when ASKED. A format with no C2PA container (dxf, csv, md, …) cannot carry a
+    // credential at all, so with the default on this branch would have printed a line on
+    // every single data-format render — noise about a promise nobody made.
     warn('C2PA_SKIPPED', `format "${finalFormat}" has no C2PA container — Content Credentials skipped.`);
+  }
+  // The Imprint's own skip, same rule: a note by default, a warning when asked for.
+  if (imprintFloorSkip) {
+    const msg = 'the render is below the Lolly Imprint\'s detection floor (too few 8×8 luma blocks), '
+      + 'so no pixel watermark was embedded. The file is otherwise unchanged, and a browser tier could not have marked it either.';
+    if (imprint === true) warn('IMPRINT_SKIPPED', msg); else note(`Note: ${msg}`);
   }
 
   // `--filename=<name>` names the file when no --output was given (contract B6). It is
@@ -883,7 +1044,13 @@ export function exportFailure(format: string, failure: Error, domFreeError: Erro
 /** Flags this shell reads itself, on top of url-mode's RESERVED set. */
 export const CLI_FLAGS = new Set([
   'press-profile', 'user-profile', 'link-password', 'html-fallback', 'help', 'version',
-  'text', 'password-stdin', 'share', 'link', 'verify',
+  'text', 'password-stdin', 'share', 'link', 'verify', 'rate-card',
+  // The one-word provenance opt-out (contract §12 O2). Consumed in the render path
+  // above; listed here so it is never reported as "not an input of <tool>".
+  'no-provenance',
+  // The enrolled signing identity (contract §1.3). Both take a PATH — never key
+  // material, which would be visible in `ps` to every user on the machine.
+  'sign-key', 'sign-cert',
   // Global flags (contract §1.2), consumed by the entry point but still present in the
   // params object a programmatic caller passes through.
   'quiet', 'verbose', 'strict', 'json',
@@ -1119,6 +1286,56 @@ export async function readProfile(profilePath: string | undefined): Promise<Prof
     throw usageError(`The profile file "${profilePath}" must contain a JSON object.`, 'PROFILE_INVALID');
   }
   return parsed as Profile;
+}
+
+// Every issuer/label string on a dropped card is attacker-controlled bytes. Strip
+// control characters (incl. ESC) before printing — the same threat class, and the
+// same scrub, as the credential strings in validate.ts (a crafted card must not
+// inject ANSI that forges a confirmation line).
+const scrubCtl = (v: unknown): string => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+
+/**
+ * Read + validate a `--rate-card=path.json` file, and print ONE confirmation line.
+ *
+ * Named `--rate-card`, never `--rate`/`--rates` — url-mode's reserved `profile` already
+ * collides between `--profile` (the user-profile JSON) and `--press-profile` (the CMYK
+ * condition); a third overloaded word is exactly the trip hazard docs/cli.md warns of.
+ *
+ * Unlike `--user-profile`, a missing/invalid/refused card WARNS and CONTINUES: the card
+ * is not required to render, and this phase only LOADS and validates it — the cost output
+ * is a later phase. On success it prints the issuer's own claim as REPORTED SPEECH, the
+ * digest, and a priced-line COUNT. Nothing money-shaped: no rate, no currency figure,
+ * no total. A number Lolly made up and presented as money is worse than showing nothing.
+ */
+async function loadRateCardCli(cardPath: string | undefined): Promise<void> {
+  if (!cardPath) return;
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(resolve(process.cwd(), cardPath));
+  } catch (e) {
+    warn('RATE_CARD_UNREADABLE',
+      `Could not read the rate card "${cardPath}" (${(e as Error).message}). Continuing without it.`);
+    return;
+  }
+  const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+  const card = parseRateCard(bytes, digest, validateRateCard);
+  if (isRateCardError(card)) {
+    const why = card.error === 'no-priced-lines'
+      ? 'it validates but has no priced lines, so nothing can be costed with it'
+      : card.error === 'example-card'
+        ? 'it is the shipped example — copy it and type your printer’s own rates'
+        : 'it is not a rate card this can read';
+    warn('RATE_CARD_REFUSED',
+      `The rate card "${cardPath}" was refused (${card.error}): ${why}. Continuing without it.`);
+    return;
+  }
+  // One confirmation line. Priced = lines with a usable numeric rate (the rest are
+  // "counted only"); a COUNT, never a currency figure.
+  const priced = card.lines.filter((l) => !l.disabled).length;
+  const claimed = [card.issuer?.name, card.issuer?.issued].filter(Boolean).map(scrubCtl).join(', ');
+  const said = claimed ? `The file says: ${claimed} (Lolly has not verified this). ` : '';
+  note(`✓ Rate card loaded — ${said}${digest} · prices ${priced} of ${card.lines.length} lines. ` +
+    'No prices are computed in this run.');
 }
 
 // True when the tool captures a live URL (url-shot) — its export drives Chromium

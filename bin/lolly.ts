@@ -41,6 +41,9 @@ Subcommands:
   lolly assets [query] [--type=raster]     list catalog asset ids usable as asset inputs
   lolly batch <rows.csv> [--out-dir=./out] render one file per CSV row (--keep-going)
   lolly preflight <tool-id|url> [--json]   count and check an export without rendering it
+                           add --rate-card=<f.json> to cost the counts against your
+                           printer's own rates (--run-length=N feeds perUnit lines;
+                           --use-expired-rates opts in past the card's validUntil)
                         [--strict]         (exit 4 when a check says no; 2 if it could
                                             not run. Report goes to stdout — redirect it)
   lolly smoke [--only=a,b] [--format=svg]  render every catalog tool at defaults (CI gate)
@@ -49,6 +52,11 @@ Subcommands:
                         [--metadata]       …and report what else is in the file: embedded
                                            metadata, PDF structure, and text present in
                                            the file but not visible on the page
+                        [--trust-anchor=<root.pem>]   pin a CA root (repeatable)
+                        [--no-default-anchors]        …and trust ONLY what you pinned:
+                                           drops the Lolly CA root and the vendored
+                                           C2PA list. With nothing pinned, nothing is
+                                           trusted — the bare-trust check
   lolly install-browser [--with-deps]      one-time Chromium download for the full render
                                            tier (also needs \`npm run build:web\`)
 
@@ -78,9 +86,28 @@ Export options:
   --press-profile=fogra39  CMYK press condition for pdf-cmyk / cmyk-tiff. \`--profile=\`
                            is its alias, matching URL mode's reserved \`profile\` param.
   --user-profile=<f.json>  pre-fill bindToProfile inputs from a user-profile JSON file
-  --imprint                embed the durable Lolly pixel watermark (raster)
-  --durable=1              embed the durable Content Credential (neural TrustMark)
-  --c2pa[=7|30|90|365]     stamp Content Credentials (=off forces off)
+  --rate-card=<f.json>     load + validate a printer's rate card and confirm it (a bad
+                           card warns and continues; no prices are computed)
+  --c2pa[=7|30|90|365]     stamp Content Credentials. ON BY DEFAULT, like the app
+                           (--c2pa=off opts out; =N sets the certificate lifetime)
+  --imprint                embed the Lolly pixel watermark (raster). ON BY DEFAULT
+                           for the formats that can carry it (--imprint=0 opts out)
+  --no-provenance          one word for a bare render: no credential, no imprint,
+                           no durable mark. THE deterministic-bytes switch — both
+                           marks embed a fresh timestamp, so a default render is
+                           not byte-identical run to run
+  --sign-key=<key.pem>     sign the credential with an enrolled identity instead of an
+  --sign-cert=<chain.pem>  anonymous on-device key: a P-256 PKCS#8 key file plus its
+                           certificate chain, LEAF FIRST. Both are PATHS - no flag ever
+                           takes key material, because argv is visible in \`ps\`. An
+                           encrypted key takes its passphrase from
+                           $LOLLY_SIGN_KEY_PASSWORD, or a prompt on a terminal.
+                           ($LOLLY_SIGN_KEY/$LOLLY_SIGN_CERT are the same two paths;
+                           $LOLLY_SIGN_KEY_PEM/$LOLLY_SIGN_CERT_PEM carry the PEM text
+                           itself, for CI secret stores with no filesystem.)
+                           See /info/cli-signing.html
+  --durable=1              embed the durable Content Credential (neural TrustMark).
+                           Off by default (a neural encode, and a model download)
   --password=<pw>          PDF open-password (visible in \`ps\`; see --password-stdin)
   --password-stdin         read the password from stdin instead of argv
   --depth=8|16|float       requested bits per channel; --hdr=1 for the float view transform
@@ -232,7 +259,7 @@ async function main(): Promise<void> {
   if (cmd === 'validate') {
     const files = positionals.slice(1);
     if (!files.length) {
-      throw usageError('usage: lolly validate <file…> [--json] [--metadata] [--deep] [--require=credential|none] [--trust-anchor=<root.pem>]', 'MISSING_ARGUMENT');
+      throw usageError('usage: lolly validate <file…> [--json] [--metadata] [--deep] [--require=credential|none] [--trust-anchor=<root.pem>] [--no-default-anchors]', 'MISSING_ARGUMENT');
     }
     const { validateFilesCli } = await import('../src/validate.ts');
     process.exitCode = await validateFilesCli(files, {
@@ -242,6 +269,9 @@ async function main(): Promise<void> {
       metadata: isOn(flags.metadata),
       strict: g.strict,
       trustAnchors: repeated['trust-anchor'],
+      // --no-default-anchors: pinned roots only (contract §12 O1). Absent = the
+      // default set (Lolly CA root + the vendored C2PA list).
+      defaultAnchors: !isOn(flags['no-default-anchors']),
     });
     return;
   }

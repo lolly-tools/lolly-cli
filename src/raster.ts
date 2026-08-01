@@ -15,7 +15,7 @@
  */
 import type { JSDOM } from 'jsdom';
 import { serializeUrlState } from '@lolly/engine';
-import { pxDims, rasterizeSvgToPng } from '@lolly-tools/node-shell/raster';
+import { pxDims, rasterizeSvgToPng, rasterizeSvgToImprintedPng } from '@lolly-tools/node-shell/raster';
 import type { RenderDims } from '@lolly-tools/node-shell/webshell-render';
 
 interface Runtime {
@@ -25,7 +25,14 @@ interface Runtime {
 }
 interface Manifest { id: string; render?: { width?: number; height?: number } }
 
-export interface RasterResult { bytes: Uint8Array; usedBrowser: boolean }
+export interface RasterResult {
+  bytes: Uint8Array;
+  usedBrowser: boolean;
+  /** Whether the Lolly Imprint was genuinely embedded on the Node tier. Undefined on
+   *  the browser tier, which owns (and reports) its own marks. Never guessed: a frame
+   *  below the watermark's detection floor writes an unmarked PNG and says false. */
+  imprinted?: boolean;
+}
 
 /**
  * Render a raster/PDF/video format. Returns the bytes plus whether Tier B (the browser)
@@ -39,10 +46,16 @@ export async function renderRaster(opts: {
 
   // Tier A — PNG from an SVG-native tool: resvg rasterises the engine's own SVG. No
   // browser, no built web shell. jpg/webp/pdf/video fall through to Tier B (resvg is
-  // PNG-only, and layout formats need a real engine). A pixel-watermark (imprint) or
-  // durable-credential (TrustMark) request also falls through: resvg can't embed either
-  // mark, so the web shell's imprintCanvas / durableEmbedCanvas must do it (exportUrl
-  // carries ?imprint=1 / ?durable=1 from the dims).
+  // PNG-only, and layout formats need a real engine). A durable-credential (neural
+  // TrustMark) request still falls through — that encoder is a browser feature.
+  //
+  // The pixel-watermark (imprint) used to fall through too, and that stopped being
+  // acceptable the moment the Imprint became default-on for CLI renders (contract §12
+  // O2): every `--export=png` would have demanded the scoped Chromium for a mark the
+  // caller never asked for. It is embedded HERE instead, browser-free, through the
+  // engine's own DOM-free watermark maths (rasterizeSvgToImprintedPng). A frame below
+  // the detection floor comes back null and writes the ordinary PNG — the browser
+  // could not have marked it either.
   //
   // Print prep falls through too, as a BACKSTOP. resvg is handed the tool's own SVG and
   // knows nothing about a bleed box or crop marks, so Tier A used to accept --bleed /
@@ -50,11 +63,15 @@ export async function renderRaster(opts: {
   // exit 0. run.ts now refuses those flags outright for any format that cannot carry
   // page geometry (PRINT_PREP_FORMATS), so this should be unreachable — it stays so the
   // silent no-op cannot come back if that allowlist ever widens.
-  if (fmt === 'png' && !dims.imprint && !dims.durable && !dims.bleed && !dims.marks) {
+  if (fmt === 'png' && !dims.durable && !dims.bleed && !dims.marks) {
     const svg = await tryRenderSvg(runtime, dom);
     if (svg) {
       const { width, height } = pxDims(dims, manifest);
-      return { bytes: await rasterizeSvgToPng(svg, width, height), usedBrowser: false };
+      if (dims.imprint) {
+        const marked = await rasterizeSvgToImprintedPng(svg, width, height);
+        if (marked) return { bytes: marked, usedBrowser: false, imprinted: true };
+      }
+      return { bytes: await rasterizeSvgToPng(svg, width, height), usedBrowser: false, imprinted: false };
     }
   }
 

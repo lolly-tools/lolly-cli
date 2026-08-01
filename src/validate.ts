@@ -24,6 +24,18 @@
  * to a pinned root reports the CA-verified identity instead of the default
  * signingCredential.untrusted.
  *
+ * TRUST ANCHORS, DECIDED (plans/cli-ga-contract.md §12 O1, Andy 2026-08-01):
+ * the default set is the Lolly CA root + the vendored C2PA known-certificate
+ * list + whatever `--trust-anchor` / `$LOLLY_TRUST_ANCHOR` pins. The Lolly root
+ * used to be excluded here, so a Lolly-CA-signed export that read "Verified" on
+ * the web /valid view read plain "Credential intact" in the terminal — one word
+ * meaning two things depending on which surface asked. `--no-default-anchors`
+ * drops BOTH built-in sets for a bare-trust check: only the caller's pinned
+ * roots count, and with none pinned the anchor set is empty, under which every
+ * signer reads untrusted by construction. Whichever set ran is printed with the
+ * verdict, in the same words the TUI's verdict panel uses, because "verified"
+ * is only meaningful beside "verified by what".
+ *
  * EXIT CODES (plans/cli-ga-contract.md §6b) — derived from the engine's shared verdict
  * ladder (resolveVerdict), NOT from the raw report.state this file used to branch on:
  *
@@ -41,11 +53,11 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { verifyC2pa, resolveVerdict, defaultTrustAnchors } from '@lolly/engine';
+import { verifyC2pa, resolveVerdict, defaultTrustAnchors, c2paTrustAnchors, LOLLY_CA_ROOT_PEM } from '@lolly/engine';
 import type { DeepScanResult } from '@lolly-tools/node-shell/webshell-render';
 import type { Inspection } from '@lolly-tools/node-shell/inspect';
 import { verdictSlug } from '@lolly-tools/node-shell/verdict-slugs';
-import { expandHome, splitAnchorList } from '@lolly-tools/node-shell/trust-anchors';
+import { expandHome, splitAnchorList, describeAnchorSet } from '@lolly-tools/node-shell/trust-anchors';
 import { EXIT, usageError } from './exit-codes.ts';
 import { useColor } from './output.ts';
 
@@ -65,6 +77,11 @@ export interface ValidateOpts {
   deep?: boolean;
   /** PEM paths pinned with --trust-anchor (repeatable), from the real parser. */
   trustAnchors?: string[];
+  /**
+   * --no-default-anchors: verify against the pinned roots ALONE (no Lolly CA root,
+   * no vendored C2PA list). Default true = the §12 O1 anchor set.
+   */
+  defaultAnchors?: boolean;
   /** `credential` (default) = the verdict IS the exit code; `none` = report only. */
   require?: string;
   /** --strict: an expired credential becomes a refusal. */
@@ -131,7 +148,7 @@ export interface ValidateFileOutcome {
 
 export async function validateFile(
   filePath: string,
-  { json = false, deep = false, trustAnchors, require: requireMode = 'credential', strict = false, metadata = false }: ValidateOpts = {},
+  { json = false, deep = false, trustAnchors, defaultAnchors = true, require: requireMode = 'credential', strict = false, metadata = false }: ValidateOpts = {},
 ): Promise<ValidateFileOutcome> {
   // --trust-anchor=<root.pem> is repeatable and comes from the REAL parser now (this
   // used to re-scan process.argv, because the old flag parser kept only the last
@@ -143,20 +160,23 @@ export async function validateFile(
   // at the drive letter and then reports two unreadable anchors.
   const fromEnv = splitAnchorList(process.env.LOLLY_TRUST_ANCHOR);
   const anchorPaths = [...(trustAnchors ?? []), ...fromEnv];
-  // The vendored C2PA trust list (Google/Gemini, camera makers, …) plus any
-  // --trust-anchor=<root.pem> the caller pins. NOTE the real policy: UNLIKE
-  // the web /valid view, the CLI does NOT pin the Lolly CA root — a
-  // Lolly-CA-signed export that reads "Verified" on /valid reads plain
-  // "Credential intact" here unless its root is pinned by flag. Deliberate or
-  // not, that split is now explicit in the engine's defaultTrustAnchors
-  // (engine/src/c2pa-verdict.ts) and flagged for a product decision in
-  // plans/maintainability-2026-07-18.md.
+  // The Lolly CA root + the vendored C2PA trust list (Google/Gemini, camera makers, …)
+  // plus any --trust-anchor=<root.pem> the caller pins — the SAME set the web /valid
+  // view uses, decided in contract §12 O1. `--no-default-anchors` drops both built-in
+  // sets, leaving only what was pinned (possibly nothing, which is the bare-trust
+  // check: every signer reads untrusted by construction).
   const extra: string[] = [];
   for (const p of anchorPaths) {
     try { extra.push(await readFile(expandHome(p), 'utf8')); }
     catch (e) { throw usageError(`--trust-anchor: cannot read "${p}" (${(e as Error).message}).`, 'ANCHOR_UNREADABLE'); }
   }
-  const anchors = defaultTrustAnchors({ includeLollyRoot: false, extra });
+  const anchors = defaultTrustAnchors({ includeLollyRoot: defaultAnchors, includeVendored: defaultAnchors, extra });
+  // What produced this verdict, in the TUI's words (node-shell/trust-anchors.ts).
+  const anchorFacts = {
+    lollyRoot: defaultAnchors && Boolean(LOLLY_CA_ROOT_PEM),
+    vendored: defaultAnchors ? c2paTrustAnchors().length : 0,
+    pinned: anchorPaths,
+  };
   // A path that cannot be read is exit 2 (USAGE), never 1 — the whole point of the
   // taxonomy is that a typo'd path and a forged file are different answers.
   let bytes: Uint8Array;
@@ -228,6 +248,9 @@ export async function validateFile(
     //   metadata — the file report, when --metadata ran; null when it did not, and
     //              never a fabricated empty object, because "not examined" and "nothing
     //              found" are different answers.
+    //   anchors  — WHICH trust anchors produced `resolved.trusted` (contract §12 O1).
+    //              Additive key under schemaVersion 1; consumers ignore what they
+    //              do not know.
     const resolved = resolvedState(report);
     return {
       exit,
@@ -238,6 +261,7 @@ export async function validateFile(
         resolved,
         report,
         metadata: inspection,
+        anchors: anchorFacts,
         ...(deep ? { deepScan, ...(deepErr ? { deepScanError: deepErr } : {}) } : {}),
       },
     };
@@ -305,6 +329,12 @@ export async function validateFile(
     for (const chk of report.checks) {
       const mark = chk.ok ? paint(GREEN, '✓') : chk.code === 'signingCredential.untrusted' ? paint(DIM, 'ℹ') : paint(RED, '✕');
       process.stdout.write(`  ${mark} ${clean(chk.code)} ${paint(DIM, '— ' + clean(chk.explanation))}\n`);
+    }
+    // WHICH anchor set produced that verdict. Printed for every file that was read,
+    // including the no-credential case: "nothing vouches for this signer" and "you
+    // asked me to trust nothing" are different answers and must not look alike.
+    if (report.state !== 'none' || anchorFacts.pinned.length || !defaultAnchors) {
+      process.stdout.write(paint(DIM, `  ${describeAnchorSet(anchorFacts)}\n`));
     }
     if (deepErr) {
       process.stdout.write(paint(YELLOW, `! Deep scan unavailable`) + paint(DIM, ` — ${clean(deepErr)}\n`));

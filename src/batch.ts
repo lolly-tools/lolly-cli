@@ -137,6 +137,15 @@ export async function runBatchCli(csvPath: string, opts: { outDir: string; keepG
     if (row.height) params.height = String(row.height);
     if (row.unit) params.unit = row.unit;
     if (row.dpi) params.dpi = String(row.dpi);
+    // PROVENANCE OFF unless the row asks for it (contract §12 O2). A single `lolly run`
+    // is somebody making an asset, so it carries Content Credentials and the Imprint
+    // like the app does; a batch is a build step, and both marks embed a fresh
+    // timestamp, so signing 500 rows by default would make a regenerated folder differ
+    // from its predecessor in every file. A row opts back in with a `c2pa` (or
+    // `imprint`/`durable`) column, which parseUrlState reads exactly as `?c2pa=` does.
+    if (params.c2pa === undefined && params.imprint === undefined && params.durable === undefined) {
+      params['no-provenance'] = '1';
+    }
     const fmt = row.format ?? await defaultFormat(row.toolId);
     const seq = String(i + 1).padStart(pad, '0');
     const base = row.filename ? slug(row.filename.replace(/\.[^.]+$/, '')) : slug(row.toolId);
