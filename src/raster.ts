@@ -15,7 +15,7 @@
  */
 import type { JSDOM } from 'jsdom';
 import { serializeUrlState } from '@lolly/engine';
-import { pxDims, rasterizeSvgToPng, rasterizeSvgToImprintedPng } from '@lolly-tools/node-shell/raster';
+import { eligibleForResvgPng, rasterizeTierAPng } from '@lolly-tools/node-shell/raster';
 import type { RenderDims } from '@lolly-tools/node-shell/webshell-render';
 
 interface Runtime {
@@ -63,15 +63,14 @@ export async function renderRaster(opts: {
   // exit 0. run.ts now refuses those flags outright for any format that cannot carry
   // page geometry (PRINT_PREP_FORMATS), so this should be unreachable — it stays so the
   // silent no-op cannot come back if that allowlist ever widens.
-  if (fmt === 'png' && !dims.durable && !dims.bleed && !dims.marks) {
+  if (eligibleForResvgPng(fmt, dims)) {
     const svg = await tryRenderSvg(runtime, dom);
     if (svg) {
-      const { width, height } = pxDims(dims, manifest);
-      if (dims.imprint) {
-        const marked = await rasterizeSvgToImprintedPng(svg, width, height);
-        if (marked) return { bytes: marked, usedBrowser: false, imprinted: true };
-      }
-      return { bytes: await rasterizeSvgToPng(svg, width, height), usedBrowser: false, imprinted: false };
+      // Shared Tier-A rasteriser (node-shell): imprint + physical-unit DPI, identical to the
+      // TUI. `imprinted` reflects whether the mark was actually embedded — the imprinted path
+      // returns the plain PNG (no mark) below the watermark detection floor.
+      const { bytes, imprinted } = await rasterizeTierAPng(svg, dims, manifest);
+      return { bytes, usedBrowser: false, imprinted };
     }
   }
 

@@ -98,6 +98,7 @@ import type {
 import { canShowMoney, formatMoney, COST_DISCLAIMER } from '@lolly-tools/core';
 import type { MoneyContext, SerializedCost, SerializedWorkingRow } from '@lolly-tools/core';
 import { matchedExportFormat } from '@lolly-tools/node-shell/raster';
+import { cleanControlChars } from '@lolly-tools/node-shell/verdict-report';
 import {
   decryptLinkQuery, explicitInputValues, formatFromOutput, loadToolOrThrow,
   quietVirtualConsole, readProfile, readToolFile, resolveJpegSynonym, shadowedInputs,
@@ -128,7 +129,10 @@ const paint = (code: string, s: string): string => (tty ? code + s + RESET : s);
  * the data — worse than the ANSI risk it removes. Colour is only ever emitted by
  * `paint()` over our own literals.
  */
-const clean = (v: unknown): string => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+// The ONE terminal control-char scrub, shared with the verdict renderer and run.ts
+// (node-shell/verdict-report). Byte-identical to the former local copy; collapsed so a
+// future hardening of the scrub (e.g. a new ANSI vector) reaches every print boundary.
+const clean = cleanControlChars;
 
 /** This subcommand's own flags. Removed from the params before they are read as
  *  URL state, so they are never mistaken for tool inputs. `rate-card`/`run-length`/

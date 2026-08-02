@@ -17,7 +17,7 @@ import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
 // scoped Chromium).
-import { NODE_FORMATS, DEEP_FORMATS, pxDims, matchedExportFormat } from '@lolly-tools/node-shell/raster';
+import { NODE_FORMATS, DEEP_FORMATS, pxDims, matchedExportFormat, canCarryPrintPrep, printPrepRefusal } from '@lolly-tools/node-shell/raster';
 import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
 // The enrolled signing identity (key + x5chain) — type only here; the module itself is
 // imported lazily in the render path so a run without --sign-key never loads it.
@@ -29,6 +29,7 @@ import { assertRenderOk } from '@lolly-tools/node-shell/render-integrity';
 // (headless Chromium has no AV1 encoder, so an --export=avif used to write PNG).
 import { assertFormatBytes, sniffFormat, formatAllows } from '@lolly-tools/node-shell/format-sniff';
 import { needsBrowserTier } from '@lolly-tools/node-shell/browser-tier';
+import { cleanControlChars } from '@lolly-tools/node-shell/verdict-report';
 // url-shot: capture a live page via the scoped Chromium (shared with the TUI).
 import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
 import { createCliBridge, applyBrandVars, CLI_CAPABILITIES } from './bridge.ts';
@@ -783,14 +784,8 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // shells/web/src/bridge/export.ts); nothing applies a bleed box or crop marks to a
     // PNG, an SVG or an EPS on any tier. So the allowlist is those three, and every other
     // format refuses by name rather than accepting flags it will ignore.
-    if ((bleed || marksRaw) && !PRINT_PREP_FORMATS.has(targetFormat.toLowerCase())) {
-      throw unavailableHere(
-        `--bleed/--marks cannot be applied to "${targetFormat}". Bleed boxes and crop/registration marks are ` +
-        `page geometry, and only the page formats carry them: ${[...PRINT_PREP_FORMATS].join(', ')}. ` +
-        `Accepting the flags here would give you a file identical to one exported without them, with nothing to say so. ` +
-        'Export one of those formats, or drop the flags. No file was written.',
-        'PRINT_PREP_UNAVAILABLE',
-      );
+    if ((bleed || marksRaw) && !canCarryPrintPrep(targetFormat)) {
+      throw unavailableHere(printPrepRefusal(targetFormat), 'PRINT_PREP_UNAVAILABLE');
     }
 
     // What the DOM-free attempt said, kept so a failed escalation can report BOTH halves
@@ -991,14 +986,6 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
  * So a DOM-free failure on one of these is a reason to escalate, not to refuse.
  */
 const VECTOR_ESCALATABLE = new Set(['svg', 'emf', 'eps', 'eps-cmyk', 'dxf']);
-
-/**
- * The only formats that can carry `--bleed` / `--marks`. Derived from where
- * computePrintGeometry is actually called in shells/web/src/bridge/export.ts (renderPdf,
- * renderCmykPdf, renderCmykTiff) — not from what sounds print-ish. If a fourth renderer
- * ever grows print geometry, add it here or the CLI will keep refusing it.
- */
-const PRINT_PREP_FORMATS = new Set(['pdf', 'pdf-cmyk', 'cmyk-tiff']);
 
 /**
  * Failures that describe THIS RENDER rather than this shell's tiers. They are never
@@ -1292,7 +1279,7 @@ export async function readProfile(profilePath: string | undefined): Promise<Prof
 // control characters (incl. ESC) before printing — the same threat class, and the
 // same scrub, as the credential strings in validate.ts (a crafted card must not
 // inject ANSI that forges a confirmation line).
-const scrubCtl = (v: unknown): string => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+const scrubCtl = cleanControlChars;
 
 /**
  * Read + validate a `--rate-card=path.json` file, and print ONE confirmation line.

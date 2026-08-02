@@ -57,6 +57,7 @@ import { verifyC2pa, resolveVerdict, defaultTrustAnchors, c2paTrustAnchors, LOLL
 import type { DeepScanResult } from '@lolly-tools/node-shell/webshell-render';
 import type { Inspection } from '@lolly-tools/node-shell/inspect';
 import { verdictSlug } from '@lolly-tools/node-shell/verdict-slugs';
+import { cleanControlChars, verdictHeadline, verdictFacts, verdictChecks } from '@lolly-tools/node-shell/verdict-report';
 import { expandHome, splitAnchorList, describeAnchorSet } from '@lolly-tools/node-shell/trust-anchors';
 import { EXIT, usageError } from './exit-codes.ts';
 import { useColor } from './output.ts';
@@ -70,7 +71,11 @@ const paint = (code: string, s: string) => (tty ? code + s + RESET : s);
 // checked. Strip control characters (incl. ESC) before printing so a crafted
 // manifest can't inject ANSI sequences that forge or hide verdict lines in
 // the very tool meant to be trustworthy about them.
-const clean = (v: unknown) => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+// THE scrub lives once in node-shell/verdict-report so the CLI, the TUI and MCP
+// cannot patch one copy and leave the other two holed; this is the local alias.
+const clean = cleanControlChars;
+// Verdict tone -> this surface's ANSI colour. Kept beside the paints below.
+const TONE_ANSI = { good: GREEN, warn: YELLOW, bad: RED, dim: DIM } as const;
 
 export interface ValidateOpts {
   json?: boolean;
@@ -267,34 +272,18 @@ export async function validateFile(
     };
   }
   {
-    // The engine's shared verdict ladder (resolveVerdict, engine/src/
-    // c2pa-verdict.ts) replaces the private ladder + expired-only re-derivation
-    // that used to live here; the strings below are this surface's unchanged
-    // rendering of each semantic state. Two deliberate CLI quirks, preserved:
-    //  • partsMadeWithLolly is elevated to a headline here (resolveVerdict
-    //    keeps it a flag, matching the web hero, where parts is only a
-    //    scorecard pip) — it can only fire on the 'trusted'/'valid' states,
-    //    exactly the rung it occupied before (after likely, before expired);
-    //  • there is no separate "Verified" headline for a CA-trusted signer
-    //    (the web /valid has one): 'trusted' renders as "Credential intact",
-    //    with the identity shown in the facts below.
+    // Headline + facts + checks come from the shared node-shell renderer
+    // (verdict-report.ts) so this surface and the TUI can never again print
+    // different words for the same verdict. This file keeps ONLY the ANSI skin.
+    // Two CLI quirks survive the move and are carried by the shared renderer:
+    //  • partsMadeWithLolly IS elevated to a headline here (elevateParts) —
+    //    resolveVerdict keeps it a flag, matching the web hero where parts is
+    //    only a scorecard pip;
+    //  • no separate "Verified" headline for a CA-trusted signer (the web /valid
+    //    has one): 'trusted' renders as "Credential intact", identity in facts.
     const v = resolvedState(report);
-    const headline = v.state === 'lolly'
-      ? paint(GREEN, '✦ Made with Lolly') + paint(DIM, ' — credential intact, file unchanged since export')
-      : v.state === 'delivered'
-        ? paint(GREEN, '◆ Delivered by Lolly') + paint(DIM, ' — verified authentic official asset; delivered by Lolly, not created by it')
-      : v.state === 'likelyLolly'
-        ? paint(YELLOW, '~ Likely made with Lolly') + paint(DIM, ' — the credential\'s own content checks out and records a Lolly export, but this file\'s bytes no longer match it')
-      : v.partsMadeWithLolly
-        ? paint(YELLOW, '~ Parts made with Lolly') + paint(DIM, ' — the intact provenance chain records Lolly steps, but the file as it stands was produced by another tool')
-      : v.state === 'expired'
-        ? paint(YELLOW, '! Credential expired') + paint(DIM, ' — the file still matches what was signed; the one-year on-device certificate has lapsed')
-      : v.state === 'invalid'
-        ? paint(RED, '✕ Credential broken') + paint(DIM, ' — the file no longer matches what was signed')
-      : v.state === 'none'
-        ? paint(DIM, '○ No Content Credentials found')
-        // 'valid' and 'trusted' — see the no-separate-Verified-headline note above.
-        : paint(GREEN, '✓ Credential intact') + paint(DIM, ' — signed on-device (integrity, not identity)');
+    const h = verdictHeadline(v, { elevateParts: true });
+    const headline = paint(TONE_ANSI[h.tone], `${h.glyph} ${h.name}`) + (h.detail ? paint(DIM, ` — ${h.detail}`) : '');
     process.stdout.write(`${paint(BOLD, filePath)}${report.format ? paint(DIM, `  [${report.format}]`) : ''}\n${headline}\n`);
     if (report.reason && report.state !== 'invalid') process.stdout.write(paint(DIM, `  ${clean(report.reason)}\n`));
     if (report.claim && !report.madeWithLolly) {
@@ -303,32 +292,10 @@ export async function validateFile(
         : '  (fields below are self-asserted by whoever signed the file)\n'));
     }
 
-    if (report.claim) {
-      const c = report.claim;
-      const s: Partial<NonNullable<typeof report.signer>> = report.signer || {};
-      const env: Record<string, string | number | boolean> = report.environment || {};
-      const signedAt = c.actions?.find((a) => a.when)?.when;
-      const generator = c.generatorInfo?.name
-        ? `${c.generatorInfo.name}${c.generatorInfo.version ? ' ' + c.generatorInfo.version : ''}`
-        : c.claimGenerator;
-      const id = report.signer?.identity;
-      const facts: Array<[string, unknown]> = [
-        ['Title', c.title],
-        ['Identity', report.trusted && id
-          && `${id.email || s.commonName}${id.issuer ? ` — verified by ${id.issuer}` : ''}`],
-        ['Tool', env.tool],
-        ['Produced by', report.author && `${report.author.name}${report.author.email ? ` <${report.author.email}>` : ''}`],
-        [report.delivered ? 'Delivered by' : 'Made with', generator],
-        ['Signed', signedAt],
-        ['Where', [env.surface, env.engine, env.os].filter(Boolean).join(' · ')],
-        ['Signer', s.commonName], ['Issuer', s.organization && `${s.organization}${s.selfSigned ? ' (self-signed)' : ''}`],
-        ['Algorithm', s.alg], ['Manifest', c.manifestLabel],
-      ];
-      for (const [k, v] of facts) if (v) process.stdout.write(`  ${paint(DIM, k.padEnd(11))} ${clean(v)}\n`);
-    }
-    for (const chk of report.checks) {
-      const mark = chk.ok ? paint(GREEN, '✓') : chk.code === 'signingCredential.untrusted' ? paint(DIM, 'ℹ') : paint(RED, '✕');
-      process.stdout.write(`  ${mark} ${clean(chk.code)} ${paint(DIM, '— ' + clean(chk.explanation))}\n`);
+    for (const [k, val] of verdictFacts(report)) process.stdout.write(`  ${paint(DIM, k.padEnd(11))} ${val}\n`);
+    for (const chk of verdictChecks(report)) {
+      const mark = chk.mark === 'ok' ? paint(GREEN, '✓') : chk.mark === 'info' ? paint(DIM, 'ℹ') : paint(RED, '✕');
+      process.stdout.write(`  ${mark} ${chk.code} ${paint(DIM, '— ' + chk.explanation)}\n`);
     }
     // WHICH anchor set produced that verdict. Printed for every file that was read,
     // including the no-credential case: "nothing vouches for this signer" and "you
