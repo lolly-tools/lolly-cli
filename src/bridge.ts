@@ -17,6 +17,9 @@ import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
 } from '@lolly-tools/core/host-v1';
+// Deep image encoders (v1.100 host.codec) — off the @lolly/engine barrel by
+// design, imported deep-relative like node-shell/raster.ts does for packExr.
+import { encodeExr, encodeRadiance, encodePng16, encodeDither8 } from '../../../engine/src/deep-encode.ts';
 // PDF metadata inspect/strip is pure pdf-lib (no DOM), so the lean node CLI
 // shares the web shell's implementation rather than duplicating it.
 import { createPdfAPI } from '../../web/src/bridge/pdf.ts';
@@ -177,6 +180,16 @@ export async function createCliBridge(
   host.profile = {
     async get() { return profile; },
     subscribe() { return () => {}; },
+  };
+
+  // Deep image codecs (v1.100) — the same pure engine writers the web shell
+  // wraps, so a tool that hands over a float frame encodes identically headless.
+  // (No native deps; the writers are pure TypeScript.)
+  host.codec = {
+    png16: async (f, o) => encodePng16({ ...f, space: f.space ?? 'srgb-linear' }, o),
+    exr: async (f, o) => encodeExr({ ...f, space: f.space ?? 'srgb-linear' }, o),
+    radiance: async (f, o) => encodeRadiance({ ...f, space: f.space ?? 'srgb-linear' }, o),
+    dither8: async (f, o) => encodeDither8({ ...f, space: f.space ?? 'srgb-linear' }, o),
   };
 
   // Colour pairings for themable two-colour icons, from the catalog's palette
