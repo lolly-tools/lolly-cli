@@ -24,7 +24,7 @@
  * to a pinned root reports the CA-verified identity instead of the default
  * signingCredential.untrusted.
  *
- * TRUST ANCHORS, DECIDED (plans/cli-ga-contract.md §12 O1, Andy 2026-08-01):
+ * TRUST ANCHORS, DECIDED (plans/73-cli-ga-contract.md §12 O1, Andy 2026-08-01):
  * the default set is the Lolly CA root + the vendored C2PA known-certificate
  * list + whatever `--trust-anchor` / `$LOLLY_TRUST_ANCHOR` pins. The Lolly root
  * used to be excluded here, so a Lolly-CA-signed export that read "Verified" on
@@ -36,7 +36,7 @@
  * verdict, in the same words the TUI's verdict panel uses, because "verified"
  * is only meaningful beside "verified by what".
  *
- * EXIT CODES (plans/cli-ga-contract.md §6b) — derived from the engine's shared verdict
+ * EXIT CODES (plans/73-cli-ga-contract.md §6b) — derived from the engine's shared verdict
  * ladder (resolveVerdict), NOT from the raw report.state this file used to branch on:
  *
  *   valid / expired          → 0   the file matches what was signed

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * argv → flags + positionals, and the frozen vocabulary around them
- * (plans/cli-ga-contract.md §1.1–§1.3).
+ * (plans/73-cli-ga-contract.md §1.1–§1.3).
  *
  * The parser is deliberately tiny and deliberately FROZEN: `--k=v`; a bare `--k` is
  * "1"; `--k=0|false|off|no` is false; values may span newlines (a multiline longtext

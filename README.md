@@ -82,7 +82,7 @@ There is nothing to build. Node runs the TypeScript directly. Typechecking is `t
 
 ## Surprising things
 
-- **`--profile` is the CMYK press condition, matching URL mode's reserved `profile` param.** The user-profile JSON file is `--user-profile`. The two used to share the word `--profile`, which is exactly the collision the GA contract (plans/cli-ga-contract.md B1) removed: a flag name that does not equal its URL param name makes "the CLI is URL mode under a different transport" untrue.
+- **`--profile` is the CMYK press condition, matching URL mode's reserved `profile` param.** The user-profile JSON file is `--user-profile`. The two used to share the word `--profile`, which is exactly the collision the GA contract (plans/73-cli-ga-contract.md B1) removed: a flag name that does not equal its URL param name makes "the CLI is URL mode under a different transport" untrue.
 - **State does not persist.** Every invocation starts with an empty in-memory store, so there are no saved sessions here.
 - **A format that cannot be produced here is an error, not a different file.** Asking for a format this shell cannot make fails with a non-zero exit and writes nothing at the requested path. It used to write HTML under a renamed output and exit 0, which meant a pipeline asking for PDF could receive HTML and never know. `--html-fallback` opts back into the HTML artifact, under a `.html` name and with a warning saying so.
 - **The output is sniffed against the requested format before it is written.** Headless Chromium has no AV1 encoder, so `--export=avif` used to receive PNG bytes and write them under the `.avif` name. Bytes that are demonstrably a different container are now refused.

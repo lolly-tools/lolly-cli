@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's ONE machine surface (plans/cli-ga-contract.md §5.2).
+ * The CLI's ONE machine surface (plans/73-cli-ga-contract.md §5.2).
  *
  * Every `--json` emission from every command is the same envelope, so an agent writes
  * one parser and one failure branch rather than one per subcommand:

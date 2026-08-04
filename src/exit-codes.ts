@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's exit-code taxonomy — frozen at GA (plans/cli-ga-contract.md §5.1).
+ * The CLI's exit-code taxonomy — frozen at GA (plans/73-cli-ga-contract.md §5.1).
  *
  * Eight codes, not a boolean. The distinctions that earn their place:
  *   • 2 vs 1     — "you used it wrong" is not "it ran and failed"; a CI loop must be

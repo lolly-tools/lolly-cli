@@ -533,7 +533,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   );
 
   // The PRO float formats (exr / .hdr) are admitted for ANY tool, declared or not.
-  // plans/deeprichpixels.md §10 rules out per-tool depth declarations — depth is an
+  // plans/61-deeprichpixels.md §10 rules out per-tool depth declarations — depth is an
   // export concern, tools stay declarative — so a tool.json listing "exr" would be
   // exactly the mistake the plan names (and would drag the schema enum plus every
   // per-brand generated catalog index along with it). The honest gate is at render
@@ -675,7 +675,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // Set up the rendering DOM. Brand vars go on first: the catalog's semantic
     // colour slots (--brand-primary, --brand-surface, …) land on the canvas root
     // BEFORE hydration, so a template's var(--brand-primary, fallback) reads the
-    // same brand via web, URL mode, and CLI (plans/brand-token-contract.md §7).
+    // same brand via web, URL mode, and CLI (plans/archive/brand-token-contract.md §7).
     const canvas = dom.window.document.getElementById('canvas')!;
     await applyBrandVars(canvas, host);
     canvas.innerHTML = runtime.getHydrated();
@@ -695,7 +695,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // FLOAT samples instead of the default 16-bit HALF. Every other combination is
     // logged and ignored rather than obeyed — EXR has no integer sample type, Radiance
     // is RGBE by definition, and no CLI raster path has a >8-bit SOURCE yet, so
-    // --depth=16 on png/tiff here would be padding. See plans/deeprichpixels.md §10
+    // --depth=16 on png/tiff here would be padding. See plans/61-deeprichpixels.md §10
     // and the note in docs/url-mode.md.
     if (depth !== 'auto') exportOpts.depth = depth;
     // --hdr=… routes the render through the engine's float HDR view transform. Today

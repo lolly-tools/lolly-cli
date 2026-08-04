@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's output discipline (plans/cli-ga-contract.md §5.3 and §1.2).
+ * The CLI's output discipline (plans/73-cli-ga-contract.md §5.3 and §1.2).
  *
  * TWO rules, both frozen at GA:
  *

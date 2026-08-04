@@ -192,6 +192,24 @@ export async function createCliBridge(
     dither8: async (f, o) => encodeDither8({ ...f, space: f.space ?? 'srgb-linear' }, o),
   };
 
+  // Layered-bitmap write-back (v1.102) — the same engine PSD writer the web
+  // shell wraps, so `--export`ing a layered PSD is byte-identical headless.
+  host.layers = {
+    writePsd: async (doc) => {
+      const { writePsd } = await import('../../../engine/src/psd-write.ts');
+      const { CSS_TO_PSD_BLEND } = await import('../../../engine/src/raster-layers.ts');
+      return writePsd({
+        width: doc.width,
+        height: doc.height,
+        layers: doc.layers.map((l) => ({
+          ...l,
+          blend: (l.blend && Object.hasOwn(CSS_TO_PSD_BLEND, l.blend) ? l.blend : 'normal') as
+            import('../../../engine/src/raster-layers.ts').CssBlendMode,
+        })),
+      });
+    },
+  };
+
   // Colour pairings for themable two-colour icons, from the catalog's palette
   // asset tagged "icon-themes". The in-flight promise is cached so N themed
   // refs resolving in parallel share one read per CLI invocation.
@@ -596,7 +614,7 @@ function rootSvgOf(node: Element | null): Element | null {
         return new Blob([text], { type: 'image/vnd.dxf' });
       }
       if (format === 'exr' || format === 'hdr') {
-        // The pro float formats (plans/deeprichpixels.md §6 B3, surfaced CLI-first per
+        // The pro float formats (plans/61-deeprichpixels.md §6 B3, surfaced CLI-first per
         // §10 item 4): the engine's own OpenEXR / Radiance writers over a resvg raster
         // of THIS tool's SVG. Browser-free, so they belong on this side of the tier
         // split rather than in raster.ts's Tier B.
@@ -701,7 +719,7 @@ function rootSvgOf(node: Element | null): Element | null {
       const el = w.document.createElement('div');
       el.innerHTML = childRuntime.getHydrated();
       // Compose children get the same brand vars as the top-level canvas
-      // (plans/brand-token-contract.md §3 injection rules). For html-format
+      // (plans/archive/brand-token-contract.md §3 injection rules). For html-format
       // children the wrapper div (with its inline vars) is what's serialised;
       // the svg serialiser excludes the wrapper root, so standalone svg
       // children still rely on their var() fallbacks (accepted class).
@@ -776,7 +794,7 @@ function rootSvgOf(node: Element | null): Element | null {
 }
 
 // The seven semantic colour slots → namespaced CSS custom properties on the
-// canvas root (plans/brand-token-contract.md §3): `--brand-primary` …
+// canvas root (plans/archive/brand-token-contract.md §3): `--brand-primary` …
 // `--brand-edge`. Reserved --brand-font/--brand-font-text are NOT set yet
 // (font rung is a later pass).
 const BRAND_VAR_SLOTS = ['primary', 'on-primary', 'secondary', 'surface', 'text', 'muted', 'edge'] as const;
@@ -850,7 +868,7 @@ function mimeFor(format: string): string {
     case 'webp': return 'image/webp';
     case 'emf': return 'image/emf';
     case 'eps': case 'eps-cmyk': return 'application/postscript';
-    // Pro float formats (plans/deeprichpixels.md §6 B3). `image/x-exr` is the de-facto
+    // Pro float formats (plans/61-deeprichpixels.md §6 B3). `image/x-exr` is the de-facto
     // OpenEXR type (never IANA-registered); `image/vnd.radiance` IS registered for RGBE.
     case 'exr': return 'image/x-exr';
     case 'hdr': return 'image/vnd.radiance';

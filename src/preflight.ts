@@ -48,7 +48,7 @@
  * every such figure comes FROM that card (currency and rates both). Nothing is ever
  * originated, defaulted, inferred or approximated. A number Lolly made up and
  * presented as money is worse than showing nothing.
- * See `plans/preflight-and-cost.md` §6 and §8.
+ * See `plans/65-preflight-and-cost.md` §6 and §8.
  *
  * ## Streams and exit codes
  *
@@ -232,7 +232,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   // query and preflight it as if the query were --flags. Any --flag after the URL
   // overrides the URL's param, exactly as `runToolCli`'s URL branch does. No
   // `profile` remap any more: url-mode's `profile` IS the press condition, and so is
-  // the CLI's `--profile` (plans/cli-ga-contract.md B1). The user-profile FILE has its
+  // the CLI's `--profile` (plans/73-cli-ga-contract.md B1). The user-profile FILE has its
   // own flag, `--user-profile`.
   let toolId = positional;
   let params: Record<string, string> = { ...flags };

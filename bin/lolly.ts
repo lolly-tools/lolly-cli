@@ -10,7 +10,7 @@
  * pairs become the same input values the web shell would parse from ?foo=bar in the URL
  * hash. The engine doesn't know which path delivered them.
  *
- * TWO RULES this file exists to enforce (plans/cli-ga-contract.md §0):
+ * TWO RULES this file exists to enforce (plans/73-cli-ga-contract.md §0):
  *   • stdout carries the payload and nothing else; every diagnostic goes to stderr.
  *   • NOTHING here calls process.exit() after writing to stdout. An exit() right after
  *     a pipe write discards the unflushed remainder — a 638 KB PNG arrived as 65536
