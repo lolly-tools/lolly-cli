@@ -11,7 +11,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt } from '@lolly/engine';
 import { createHash } from 'node:crypto';
 import type { Lang } from '@lolly/engine';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
@@ -449,7 +449,7 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     }
     // Copy the VIEW (not `.buffer`): the browser tier hands back a Uint8Array whose
     // backing buffer may be larger than the file, and `.buffer` would write the slack.
-    const buf = Buffer.from(bytes);
+    let buf = Buffer.from(bytes);
     // WITHOUT --output, a transform streams to stdout like every other path in this
     // shell (contract §11: docs/cli.md always claimed it did; the code instead wrote
     // `<name>-clean.svg` into the working directory and printed nothing, so a pipeline
@@ -457,6 +457,20 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // how you ask for a named file without naming a path; the hook's own suggestion is
     // used for it only when you do.
     const dest = outputPath || (filenameFlag ? resolve(process.cwd(), filenameFlag) : null);
+    // export.file's ONE legal container change: fonts. When a transform's output is an
+    // sfnt/WOFF and the requested name asks for a DIFFERENT font container, convert it
+    // (TTF/OTF <-> WOFF via the engine's lossless codecs) so the bytes match the name.
+    // This is the font-convert tool's headless path; the glyph outlines are untouched.
+    if (dest) {
+      const de = extname(dest).slice(1).toLowerCase();
+      if (de === 'ttf' || de === 'otf' || de === 'woff') {
+        const k = sfntKind(bytes);
+        let conv: Uint8Array | null = null;
+        if (de === 'woff' && (k === 'ttf' || k === 'otf')) conv = sfntToWoff(bytes);
+        else if ((de === 'ttf' || de === 'otf') && k === 'woff') conv = woffToSfnt(bytes);
+        if (conv) { bytes = conv; buf = Buffer.from(bytes); }
+      }
+    }
     if (dest) {
       // The name you chose vs the bytes you got. A transform cannot change the container
       // to match the name, so this is a WARNING, not a refusal — but it must be said:
