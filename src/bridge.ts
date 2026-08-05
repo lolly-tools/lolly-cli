@@ -12,7 +12,7 @@
 
 import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
+import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, emitWmf, gzip, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
@@ -126,6 +126,9 @@ interface CliExportRenderOpts extends ExportOpts {
   dataText?: string;
   dataMime?: string;
   unit?: string;
+  /** Resolved Imprint decision forwarded by run.ts — consumed only by the BMP branch
+   *  (the pixel watermark; container-less BMP carries no C2PA). Default-on when absent. */
+  imprint?: boolean;
   /** The `hdr=` request, forwarded by run.ts. The canonical HostV1 ExportOpts has no
    *  HDR dials (the web shell carries its own extension too — shells/web/src/bridge/
    *  export.ts's ExportOpts), so this is the CLI's local extension of the same shape,
@@ -530,7 +533,7 @@ function rootSvgOf(node: Element | null): Element | null {
         clone.querySelectorAll('script').forEach((el) => el.remove());
         return new Blob([clone.outerHTML], { type: 'text/html' });
       }
-      if (format === 'svg') {
+      if (format === 'svg' || format === 'svgz') {
         const svg = rootSvgOf(node);
         if (!svg) {
           throw new Error('SVG export requires the template\'s root drawable to be an <svg> (HTML-layout tools need a browser engine — use the desktop app or the web shell)');
@@ -565,7 +568,14 @@ function rootSvgOf(node: Element | null): Element | null {
           ? new w.XMLSerializer().serializeToString(svg)
           : svg.outerHTML;
         const xml = injectSvgMeta(raw, opts.meta); // embed authorship provenance
-        return new Blob(['<?xml version="1.0" standalone="no"?>\n' + xml], { type: 'image/svg+xml' });
+        const full = '<?xml version="1.0" standalone="no"?>\n' + xml;
+        if (format === 'svgz') {
+          // SVGZ is literally gzip(SVG) — same provenance-bearing markup, ~60-70%
+          // smaller. gunzip on read recovers the identical bytes.
+          const gz = gzip(new TextEncoder().encode(full));
+          return new Blob([gz as BlobPart], { type: 'image/svg+xml' });
+        }
+        return new Blob([full], { type: 'image/svg+xml' });
       }
       if (format === 'emf') {
         // EMF is pure bytes built from SVG primitives — no rasteriser needed, so
@@ -613,6 +623,18 @@ function rootSvgOf(node: Element | null): Element | null {
         const { text } = emitDxf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         return new Blob([text], { type: 'image/vnd.dxf' });
       }
+      if (format === 'wmf') {
+        // WMF is the 16-bit ancestor of EMF — a fifth sink on the SAME svgDomToIr
+        // vector path, wired identically. Text is outlined upstream (host.text
+        // present; an unresolvable family throws — the text-as-paths guard). The
+        // metadata flag is accepted for call-site symmetry but is a no-op: WMF has
+        // no comment record to carry a source URL.
+        const svg = rootSvgOf(node);
+        if (!svg) throw new Error('WMF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'WMF' });
+        const bytes = emitWmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
+        return new Blob([bytes as BlobPart], { type: 'image/wmf' });
+      }
       if (format === 'exr' || format === 'hdr') {
         // The pro float formats (plans/61-deeprichpixels.md §6 B3, surfaced CLI-first per
         // §10 item 4): the engine's own OpenEXR / Radiance writers over a resvg raster
@@ -647,6 +669,30 @@ function rootSvgOf(node: Element | null): Element | null {
           log: (level, message) => host.log(level, message),
         });
         return new Blob([bytes as BlobPart], { type: mime || deepFormatMime(format) });
+      }
+      if (format === 'bmp') {
+        // BMP joins exr/hdr as a browser-free raster: the engine's own encoder over a
+        // resvg raster of THIS tool's SVG (no Chromium). Uncompressed Windows Bitmap —
+        // the escape hatch for a legacy/embedded consumer that can't read a PNG. The
+        // Lolly pixel Imprint is embedded by default (BMP has no metadata box for a
+        // C2PA manifest, so the in-pixel mark is its only provenance); --imprint=0
+        // resolves opts.imprint to false and it is skipped.
+        const svg = rootSvgOf(node);
+        if (!svg) throw new Error('BMP export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        const raw = w.XMLSerializer ? new w.XMLSerializer().serializeToString(svg) : svg.outerHTML;
+        const { rasterizeSvgToBmp } = await import('../../../packages/node-shell/src/raster.ts');
+        const dpi = opts.dpi ?? 300;
+        const px = (v: string | number | undefined, fallback: number): number => {
+          const d = parseDimension(v);
+          return d ? Math.max(1, Math.round(toPixels(d, dpi))) : fallback;
+        };
+        const bytes = await rasterizeSvgToBmp(
+          raw,
+          px(opts.width, parseFloat(svg.getAttribute('width') as string) || 1280),
+          px(opts.height, parseFloat(svg.getAttribute('height') as string) || 720),
+          { imprint: opts.imprint !== false },
+        );
+        return new Blob([bytes as BlobPart], { type: 'image/bmp' });
       }
       // The remedy list is NODE_FORMATS itself, not a hand-kept copy of it: the two
       // drifted, so the message offered formats the engine no longer claims and omitted
@@ -862,11 +908,13 @@ function matchesFilter(meta: CatalogAsset, filter: AssetQuery): boolean {
 
 function mimeFor(format: string): string {
   switch (format) {
-    case 'svg': return 'image/svg+xml';
+    case 'svg': case 'svgz': return 'image/svg+xml';
     case 'png': return 'image/png';
     case 'jpg': case 'jpeg': return 'image/jpeg';
     case 'webp': return 'image/webp';
+    case 'bmp': return 'image/bmp';
     case 'emf': return 'image/emf';
+    case 'wmf': return 'image/wmf';
     case 'eps': case 'eps-cmyk': return 'application/postscript';
     // Pro float formats (plans/61-deeprichpixels.md §6 B3). `image/x-exr` is the de-facto
     // OpenEXR type (never IANA-registered); `image/vnd.radiance` IS registered for RGBE.

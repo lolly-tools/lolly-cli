@@ -105,6 +105,9 @@ export { needsBrowserTier };
  *  carries neither — the web shell extends it the same way). */
 type CliExportOpts = ExportOpts & {
   password?: string;
+  /** The resolved Imprint decision, forwarded to the DOM-free bridge for the one
+   *  raster it produces there (BMP). Vector/data DOM-free formats ignore it. */
+  imprint?: boolean;
   /** `--text=outline|live` — vector text-as-paths, and its opt-out (contract §6a). */
   text?: 'outline' | 'live';
   /** Reported per run the svg branch could not outline (see the bridge). */
@@ -698,6 +701,11 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     // --depth=16 on png/tiff here would be padding. See plans/61-deeprichpixels.md §10
     // and the note in docs/url-mode.md.
     if (depth !== 'auto') exportOpts.depth = depth;
+    // BMP is the only DOM-free raster the bridge produces (exr/hdr are float and carry
+    // no pixel mark; svg/emf/… are vector). Forward the resolved Imprint decision so
+    // `encodeBmp` embeds the Lolly pixel watermark by default — the only provenance a
+    // container-less format like BMP can hold — honouring --imprint=0 / --no-provenance.
+    if (isImprintFormat(targetFormat)) exportOpts.imprint = wantImprint;
     // --hdr=… routes the render through the engine's float HDR view transform. Today
     // that is the CLI's ONLY float pixel source, so it is what exr/.hdr require; the
     // brand's semantic colours (already resolved onto the canvas by applyBrandVars
