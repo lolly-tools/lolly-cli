@@ -107,6 +107,11 @@ export function parseArgs(argv: readonly string[], opts: { strictValues?: boolea
       (repeated[key] ??= []).push(value ?? '1');
       continue;
     }
+    // Any OTHER flag that appears 2+ times also accumulates its full list in
+    // `repeated` (seeded with the first occurrence), so a `multiple` tool input
+    // (--files=a --files=b) keeps every value. `flags` still holds the last, so
+    // single-valued callers are unaffected.
+    if (key in flags) (repeated[key] ??= [flags[key]!]).push(value ?? '1');
     flags[key] = value ?? '1';
   }
   return { flags, repeated, positionals };

@@ -12,10 +12,10 @@
 
 import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, emitWmf, gzip, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from '@lolly/engine';
+import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, emitWmf, gzip, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef, embedC2pa, C2PA_FORMATS, exportActionSteps, ENGINE_VERSION, collectIngredients } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
-  StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet,
+  StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet, C2paSignOpts,
 } from '@lolly-tools/core/host-v1';
 // Deep image encoders (v1.100 host.codec) — off the @lolly/engine barrel by
 // design, imported deep-relative like node-shell/raster.ts does for packExr.
@@ -709,6 +709,11 @@ function rootSvgOf(node: Element | null): Element | null {
     async file() {
       throw new Error('CLI delivers transformed files via --output (run.js writes the bytes), not host.export.file');
     },
+    // The pixel Imprint / durable mark are a raster+canvas enhancement; the lean
+    // headless CLI has no rasteriser, so it returns the bytes unchanged (progressive
+    // enhancement, per the host.export.imprint contract). The C2PA credential — the
+    // portable mark — is still applied by host.c2pa.sign either way.
+    async imprint(bytes: Uint8Array): Promise<Uint8Array> { return bytes; },
   };
 
   // Page capture — navigate a URL in the scoped Chromium and read back its pixels. The
@@ -740,6 +745,53 @@ function rootSvgOf(node: Element | null): Element | null {
   // browser engine), metadata surgery is pure pdf-lib, which runs fine in node —
   // so the lean CLI can clean PDFs too.
   host.pdf = createPdfAPI();
+
+  // host.c2pa.sign (v1.85; widened v1.104) — freshly sign a manifest into finished
+  // bytes. The engine's embedC2pa is DOM-free, so the lean CLI signs exactly like the
+  // web shell: the any-media authorship path (author/©/licence over an existing file,
+  // nested manifests preserved as ingredients) and the redact derivative path. Ephemeral
+  // on-device signer by default; an enrolled identity (env/config) fixes the window.
+  host.c2pa = {
+    async sign(bytes: Uint8Array, format: string, opts: C2paSignOpts = {}): Promise<Uint8Array> {
+      if (!C2PA_FORMATS.includes(format)) throw new Error(`no C2PA container for '${format}'`);
+      const imported = opts.action === 'imported'
+        || (opts.action == null && (opts.author != null || opts.rights != null || (opts.ingredients?.length ?? 0) > 0));
+      // Explicit artist-asserted author/rights win; else the profile identity, gated by
+      // the same "Use my details" opt-in the render path (buildExportC2paOpts) uses.
+      const author = opts.author != null
+        ? (typeof opts.author === 'string' ? (opts.author.trim() ? { name: opts.author.trim() } : undefined) : opts.author)
+        : (profile.useDetails === true && profile.firstname
+          ? { name: [profile.firstname, profile.lastname].filter(Boolean).join(' '), ...(profile.email ? { email: profile.email } : {}) }
+          : undefined);
+      const rights = opts.rights != null ? (opts.rights.trim() || undefined) : undefined;
+      const actions = imported
+        ? [{ action: 'c2pa.metadata', description: opts.description || 'Author, copyright and licence embedded' },
+           ...(opts.imprinted ? [{ action: 'c2pa.edited', description: 'Embedded a durable Lolly pixel watermark' }] : [])]
+        : (() => { const a = exportActionSteps(format, {}); a.splice(1, 0, { action: 'c2pa.redacted', description: opts.description || 'Covered content removed and the file rebuilt' }); return a; })();
+      // Additive by construction: with nothing configured resolveSigningIdentity
+      // returns null and the ephemeral self-signed signer applies, unchanged.
+      let identity: { signer: unknown; notBefore: Date; notAfter: Date } | null = null;
+      try {
+        const { resolveSigningIdentity } = await import('@lolly-tools/node-shell/signing-identity');
+        identity = await resolveSigningIdentity({});
+      } catch { /* no identity configured — ephemeral */ }
+      return await embedC2pa(bytes, format, {
+        title: opts.title || 'Embed, Imprint & Track',
+        claimGenerator: 'Lolly lolly.tools',
+        generatorInfo: { name: 'Lolly', version: ENGINE_VERSION },
+        ...(author ? { author } : {}),
+        ...(rights ? { rights } : {}),
+        actions,
+        ...(opts.ingredients?.length ? { ingredients: opts.ingredients } : {}),
+        ...(identity
+          ? { signer: identity.signer as never, dates: { notBefore: identity.notBefore, notAfter: identity.notAfter } }
+          : { dates: { notBefore: new Date(Date.now() - 60_000), notAfter: new Date(Date.now() + 30 * 86_400_000) } }),
+      });
+    },
+    async readIngredients(bytes: Uint8Array) {
+      try { return collectIngredients(bytes); } catch { return []; }
+    },
+  };
 
   // PPTX deck inspect + rebrand. The web impl already isolates its two host
   // dependencies (fflate zip codec, injectable XML parser), so the CLI reuses

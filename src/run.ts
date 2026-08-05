@@ -11,9 +11,10 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip } from '@lolly/engine';
 import { createHash } from 'node:crypto';
 import type { Lang } from '@lolly/engine';
+import type { InputValue } from '../../../engine/src/inputs.ts';
 // NODE_FORMATS: the DOM-free/raster format split, shared with the TUI. Everything not
 // in it — raster, pdf, video — is produced by raster.ts (resvg fast path, else the
 // scoped Chromium).
@@ -43,6 +44,11 @@ const REPO_ROOT = repoRoot();
 interface RunToolCliArgs {
   toolId: string;
   params: Record<string, string>;
+  /** Flags that appeared MORE THAN ONCE on the command line, with every value — how a
+   *  `multiple` file input collects `--files=a --files=b`. Merged into the query below
+   *  (each value appended) so parseUrlState builds the input's array. `params` still
+   *  carries the last value for every single-valued reader. */
+  repeated?: Record<string, string[]>;
   outputPath?: string;
   format?: string;
   /** --share/--link: print a shareable lolly.tools URL for the inputs instead of rendering. */
@@ -160,7 +166,7 @@ export function quietVirtualConsole(jsdom: typeof import('jsdom')): InstanceType
   return vc;
 }
 
-export async function runToolCli({ toolId, params, outputPath, format, share, verify, htmlFallback, text }: RunToolCliArgs): Promise<void> {
+export async function runToolCli({ toolId, params, repeated = {}, outputPath, format, share, verify, htmlFallback, text }: RunToolCliArgs): Promise<void> {
   // Lazy import — jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>', {
@@ -220,7 +226,17 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // NO SILENT DEFAULTS. `zx` is a reserved param, so parseUrlState ignores it — which meant
   // a missing or wrong password rendered the tool's DEFAULTS and exited 0. A wrong document
   // that looks right is the worst thing this shell can emit, so both cases now throw.
-  let rawQuery = new URLSearchParams(params).toString();
+  // A repeated flag (--files=a --files=b) contributes ALL its values; `params` holds
+  // only the last, so append the full list from `repeated` for those keys instead.
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (repeated[k]) continue; // appended below with every value
+    usp.append(k, v);
+  }
+  for (const [k, vs] of Object.entries(repeated)) {
+    for (const v of vs) usp.append(k, v);
+  }
+  let rawQuery = usp.toString();
   if (hasEncryptedState(rawQuery)) {
     // `--password` is url-mode's PDF open-password. When it is the only password on the
     // command line and the link is encrypted, it is obviously meant for the link, so it is
@@ -283,40 +299,41 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
   // {__file, path} ref from parseUrlState). The engine can't read files (it's
   // platform-agnostic), so the CLI loads the bytes here, into the same FileRef
   // shape the web picker produces — before createRuntime sees them.
-  for (const input of tool.manifest.inputs ?? []) {
-    if (input.type !== 'file') continue;
-    const ref = values[input.id];
-    const p = ref && typeof ref === 'object' ? (ref as { path?: string }).path : null;
-    if (!p) { delete values[input.id]; continue; }
-    // `-` reads the file from stdin (contract B10), so a utility composes with the
-    // shell: `cat in.pdf | lolly strip-data --source=- > out.pdf`. Frozen before GA
-    // precisely because once `-` can be a literal path, redefining it is breaking.
+  // Load one path ref (or stdin `-`) into the in-memory FileRef shape the web picker
+  // produces. Shared by single and `multiple` file inputs.
+  const loadFileRef = async (inputId: string, p: string): Promise<Record<string, unknown>> => {
     if (p === '-') {
+      // `-` reads the file from stdin (contract B10), so a utility composes with the
+      // shell: `cat in.pdf | lolly strip-data --source=- > out.pdf`. Frozen before GA
+      // precisely because once `-` can be a literal path, redefining it is breaking.
       const buf = await readStdin();
-      if (!buf.length) {
-        throw usageError(`--${input.id}=- reads the file from stdin, but stdin was empty.`, 'EMPTY_STDIN');
-      }
-      values[input.id] = {
-        __file: true, name: 'stdin', mime: 'application/octet-stream',
-        size: buf.length, bytes: new Uint8Array(buf), url: null,
-      };
-      continue;
+      if (!buf.length) throw usageError(`--${inputId}=- reads the file from stdin, but stdin was empty.`, 'EMPTY_STDIN');
+      return { __file: true, name: 'stdin', mime: 'application/octet-stream', size: buf.length, bytes: new Uint8Array(buf), url: null };
     }
     const abs = resolve(process.cwd(), p);
     let buf: Buffer;
-    try {
-      buf = await readFile(abs);
-    } catch (e) {
-      throw usageError(`--${input.id}: cannot read "${p}" (${(e as Error).message}).`, 'INPUT_UNREADABLE');
+    try { buf = await readFile(abs); }
+    catch (e) { throw usageError(`--${inputId}: cannot read "${p}" (${(e as Error).message}).`, 'INPUT_UNREADABLE'); }
+    return { __file: true, name: basename(abs), mime: mimeForFile(abs), size: buf.length, bytes: new Uint8Array(buf), url: null };
+  };
+  for (const input of tool.manifest.inputs ?? []) {
+    if (input.type !== 'file') continue;
+    const ref = values[input.id];
+    // A `multiple` file input collects an array of {path} refs (repeated --id=path).
+    if (input.multiple) {
+      const refs = Array.isArray(ref) ? ref : (ref ? [ref] : []);
+      const loaded: Record<string, unknown>[] = [];
+      for (const r of refs) {
+        const p = r && typeof r === 'object' ? (r as { path?: string }).path : null;
+        if (p) loaded.push(await loadFileRef(input.id, p));
+      }
+      if (loaded.length) values[input.id] = loaded as unknown as InputValue;
+      else delete values[input.id];
+      continue;
     }
-    values[input.id] = {
-      __file: true,
-      name: basename(abs),
-      mime: mimeForFile(abs),
-      size: buf.length,
-      bytes: new Uint8Array(buf),
-      url: null,
-    };
+    const p = ref && typeof ref === 'object' ? (ref as { path?: string }).path : null;
+    if (!p) { delete values[input.id]; continue; }
+    values[input.id] = await loadFileRef(input.id, p) as unknown as InputValue;
   }
 
   // An `asset` input can also take the user's OWN local image (--logo=./brand.png), not
@@ -424,8 +441,28 @@ export async function runToolCli({ toolId, params, outputPath, format, share, ve
     let usedTransformBrowser = false;
     try {
       const res = await runtime.exportFile();
-      bytes = res.bytes as Uint8Array;
-      suggestedName = res.filename;
+      if (Array.isArray(res)) {
+        // Batch (a `multiple` file input): the shell streams ONE artifact, so fold
+        // every transformed file into a zip (STORED for already-compressed media).
+        // A one-item batch still delivers that single file directly.
+        if (res.length === 1) {
+          bytes = res[0]!.bytes as Uint8Array;
+          suggestedName = res[0]!.filename;
+        } else {
+          const used = new Map<string, number>();
+          const entries = res.map((r, i) => {
+            let name = r.filename || `file-${i + 1}`;
+            const n = used.get(name) ?? 0; used.set(name, n + 1);
+            if (n) { const dot = name.lastIndexOf('.'); name = dot > 0 ? `${name.slice(0, dot)}-${n + 1}${name.slice(dot)}` : `${name}-${n + 1}`; }
+            return { name, bytes: r.bytes instanceof Uint8Array ? r.bytes : new Uint8Array(r.bytes as ArrayBuffer) };
+          });
+          bytes = storeZip(entries);
+          suggestedName = 'embed-imprint-track.zip';
+        }
+      } else {
+        bytes = res.bytes as Uint8Array;
+        suggestedName = res.filename;
+      }
     } catch (e) {
       const msg = (e as Error).message;
       const ref = fileIn ? (values[fileIn.id] as { name?: string; mime?: string; bytes?: Uint8Array } | undefined) : undefined;

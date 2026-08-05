@@ -249,7 +249,7 @@ async function main(): Promise<void> {
   if (cmd === 'run') {
     const toolId = positionals[1];
     if (!toolId) throw usageError('usage: lolly run <tool-id> [--flags]', 'MISSING_ARGUMENT');
-    await render(toolId, flags);
+    await render(toolId, flags, undefined, repeated);
     return;
   }
 
@@ -351,7 +351,7 @@ async function main(): Promise<void> {
     // export=''. That empty string is NOT a format: coalesce it to undefined so the URL's
     // own `format=` param (kept in the params, read by runToolCli) or the path-segment
     // format wins. An explicit CLI `--export=svg` is non-empty and still overrides.
-    await render(ref.toolId, merged, ref.format ?? undefined);
+    await render(ref.toolId, merged, ref.format ?? undefined, repeated);
     return;
   }
 
@@ -370,12 +370,12 @@ async function main(): Promise<void> {
     await showToolInputsCli(toolId, { lang: normalizeLang(flags.lang) ?? undefined, json: g.json });
     return;
   }
-  await render(toolId, flags);
+  await render(toolId, flags, undefined, repeated);
 }
 
 /** The one render call site: every path (verb, sugar, URL) funnels through it, so the
  *  flag→argument mapping cannot drift between them. */
-async function render(toolId: string, flags: Record<string, string>, urlFormat?: string): Promise<void> {
+async function render(toolId: string, flags: Record<string, string>, urlFormat?: string, repeated: Record<string, string[]> = {}): Promise<void> {
   if (isOn(flags.json)) {
     // `--json` on a render is deliberately absent at GA (contract §3): run's stdout IS
     // the artefact. Accepting and ignoring the flag is the silent class this shell has
@@ -400,6 +400,7 @@ async function render(toolId: string, flags: Record<string, string>, urlFormat?:
   await runToolCli({
     toolId,
     params,
+    repeated,
     outputPath: output,
     format: (fmt || undefined) ?? urlFormat,
     share: share !== undefined || link !== undefined,
