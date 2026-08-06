@@ -11,7 +11,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip, readXlsx, listXlsxSheets, rowsToCsv } from '@lolly/engine';
 import { createHash } from 'node:crypto';
 import type { Lang } from '@lolly/engine';
 import type { InputValue } from '../../../engine/src/inputs.ts';
@@ -365,23 +365,43 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     };
   }
 
-  // `--<blocksInput>-data=rows.csv` populates a `blocks` input from a CSV/JSON file via the
-  // SAME engine importer the web offers — so a chart/table can be filled from a spreadsheet
-  // headlessly instead of hand-encoding tilde/JSON rows. Read from `params` (the flag isn't
-  // a declared input, so parseUrlState ignores it).
+  // Read a data-import file to text: an `.xlsx` is unzipped through the SAME engine
+  // reader the web uses (honouring `--<input>-sheet=<name|index>`, defaulting to the
+  // first sheet) and serialised to CSV; every other file is read as UTF-8. This is the
+  // CLI half of the web data-source, so both convert a spreadsheet identically. Lists
+  // the sheet names in the note when a multi-sheet book resolves to a non-default sheet.
+  const readImportText = async (dataPath: string, inputId: string): Promise<string> => {
+    const abs = resolve(process.cwd(), dataPath);
+    if (!/\.xlsx$/i.test(dataPath)) return readFile(abs, 'utf8');
+    const bytes = new Uint8Array(await readFile(abs));
+    const sheetFlag = params[`${inputId}-sheet`];
+    const sheet = sheetFlag == null ? undefined : (/^\d+$/.test(sheetFlag) ? Number(sheetFlag) : sheetFlag);
+    const sheets = listXlsxSheets(bytes);
+    if (sheets.length > 1 && sheet === undefined) {
+      note(`ℹ ${dataPath} has ${sheets.length} sheets (${sheets.map(s => s.name).join(', ')}); reading the first. Pass --${inputId}-sheet=<name|index> to choose.`);
+    }
+    const { rows, sheetName } = readXlsx(bytes, sheet !== undefined ? { sheet } : {});
+    if (sheetName) note(`ℹ read sheet “${sheetName}” from ${dataPath}`);
+    return rowsToCsv(rows);
+  };
+
+  // `--<blocksInput>-data=rows.csv|.xlsx` populates a `blocks` input from a spreadsheet
+  // via the SAME engine importer the web offers — so a chart/table can be filled from a
+  // file headlessly instead of hand-encoding tilde/JSON rows. Read from `params` (the
+  // flag isn't a declared input, so parseUrlState ignores it).
   for (const input of tool.manifest.inputs ?? []) {
     if (input.type !== 'blocks') continue;
     const dataPath = params[`${input.id}-data`];
     if (!dataPath) continue;
-    const text = await readFile(resolve(process.cwd(), dataPath), 'utf8');
+    const text = await readImportText(dataPath, input.id);
     const fields = (input.fields ?? []) as Array<{ id: string; label?: string; type?: string }>;
     const { rows, truncated } = parseDataRows(text, { fields });
     values[input.id] = rows as (typeof values)[string];
     note(`✓ Imported ${rows.length} row${rows.length === 1 ? '' : 's'} into --${input.id} from ${dataPath}${truncated ? ' (row cap reached)' : ''}`);
   }
 
-  // `--<tableInput>-data=table.csv` fills a `table` input from a CSV/TSV/Markdown
-  // file (first row = headings) — the headless twin of the sidebar's spreadsheet
+  // `--<tableInput>-data=table.csv|.xlsx` fills a `table` input from a CSV/TSV/Markdown
+  // or .xlsx file (first row = headings) — the headless twin of the sidebar's spreadsheet
   // paste. The inline form (--data=<compact-or-JSON string>) already works via
   // parseUrlState; this flag is for real files. Read from `params` (not a
   // declared input, so parseUrlState ignores it).
@@ -389,11 +409,24 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     if (input.type !== 'table') continue;
     const dataPath = params[`${input.id}-data`];
     if (!dataPath) continue;
-    const text = await readFile(resolve(process.cwd(), dataPath), 'utf8');
+    const text = await readImportText(dataPath, input.id);
     const parsed = parseTableText(text);
     if (!parsed) throw new Error(`--${input.id}-data: ${dataPath} does not parse as a CSV/TSV/Markdown table`);
     values[input.id] = parsed as (typeof values)[string];
     note(`✓ Imported ${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} × ${parsed.columns.length} columns into --${input.id} from ${dataPath}`);
+  }
+
+  // `--<textInput>-data=data.csv|.xlsx` fills a `text`/`longtext` input with a file's
+  // content — the headless twin of the web's "Add data" affordance (an .xlsx becomes
+  // CSV in the field, first sheet or --<input>-sheet). Reach for it when a chart/table
+  // tool takes its data as pasted text rather than as structured blocks/table.
+  for (const input of tool.manifest.inputs ?? []) {
+    if (input.type !== 'text' && input.type !== 'longtext') continue;
+    const dataPath = params[`${input.id}-data`];
+    if (!dataPath) continue;
+    const text = await readImportText(dataPath, input.id);
+    values[input.id] = text as (typeof values)[string];
+    note(`✓ Filled --${input.id} from ${dataPath} (${text.length} chars)`);
   }
 
   // --share/--link: print a shareable lolly.tools link for the current inputs instead of
@@ -1215,7 +1248,8 @@ export function unknownFlags(
   for (const i of inputs) {
     known.add(i.id);
     if (i.urlKey) known.add(i.urlKey);
-    known.add(`${i.id}-data`);          // --<blocks|table>-data=rows.csv
+    known.add(`${i.id}-data`);          // --<blocks|table|text|longtext>-data=rows.csv|.xlsx
+    known.add(`${i.id}-sheet`);         // --<input>-sheet=<name|index> (which .xlsx sheet)
   }
   const prefixes = inputs.map(i => `${i.id}.`);   // --<vector>.<field>=<number>
   return Object.keys(params).filter(
