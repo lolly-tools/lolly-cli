@@ -38,6 +38,10 @@ export const REPEATABLE = new Set(['trust-anchor']);
 export const VALUE_FLAGS = new Set([
   'output', 'export', 'format', 'width', 'height', 'unit', 'dpi', 'depth',
   'bleed', 'marks', 'cuts', 'lang', 'filename', 'slot', 'z', 'zx',
+  // `designv` takes a published version's slug or `latest`. A bare form parsing to
+  // "1" would name no version, fall silently through the resolution ladder, and
+  // render against a different design system under the name the author asked for.
+  'designv',
   // `profile` is listed BESIDE `press-profile` because it is its frozen alias (§B1),
   // and a flag's two spellings must refuse the same things. Without it a bare
   // `--profile` parsed to "1" and handed the CMYK export a press condition literally

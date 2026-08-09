@@ -12,7 +12,7 @@
 
 import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, emitWmf, gzip, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, buildConnectorSvg, isZzfxmRef, parseZzfxmRef, formatZzfxmRef, embedC2pa, C2PA_FORMATS, exportActionSteps, ENGINE_VERSION, collectIngredients } from '@lolly/engine';
+import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, emitWmf, gzip, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, makeConnectorsApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef, embedC2pa, C2PA_FORMATS, exportActionSteps, ENGINE_VERSION, collectIngredients, applyPinnedAssets, DESIGN_VERSION_LATEST, pickHeadAssetId, readVersionIndex, resolveDesignVersion, versionAssetId } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet, C2paSignOpts,
@@ -151,10 +151,18 @@ interface CliBridgeOpts {
   /** The loaded manifest's `network.allowlist` — what host.net may fetch this
    *  run. Absent/empty ⇒ every host.net fetch rejects (same as the web shell). */
   networkAllowlist?: readonly string[];
+  /**
+   * The two upper rungs of the design-system resolution ladder (plans/97 §6a)
+   * for THIS run: `override` is `--designv=`/`?designv=`, `pin` is the tool
+   * manifest's `designVersion`. The lower rungs (the catalog's active version,
+   * then the edit head) are read off the head document's own ledger, so a caller
+   * that passes nothing still resolves the same version the web shell would.
+   */
+  designVersion?: { override?: string | null; pin?: string | null };
 }
 
 export async function createCliBridge(
-  { profile = {}, dom, networkAllowlist }: CliBridgeOpts = {} as CliBridgeOpts,
+  { profile = {}, dom, networkAllowlist, designVersion }: CliBridgeOpts = {} as CliBridgeOpts,
 ): Promise<HostV1> {
   const w = dom.window;
   // Pre-load the asset catalog so query/get can be synchronous-ish.
@@ -240,25 +248,87 @@ export async function createCliBridge(
     return photoTreatmentsCache;
   }
 
-  // Design tokens — the catalog's FIRST `type:'tokens'` asset (the same
-  // brand-agnostic discovery rule as the web bridge and the MCP tokens
-  // resource), read from disk and resolved by the engine per theme. Missing or
-  // unreadable → an empty set: token-bound colour inputs fall back to their
-  // cached hex and the semantic brand vars (applyBrandVars below) stay unset.
+  // Design tokens — the catalog's HEAD `type:'tokens'` asset, read from disk and
+  // resolved by the engine per theme. Missing or unreadable → an empty set:
+  // token-bound colour inputs fall back to their cached hex and the semantic
+  // brand vars (applyBrandVars below) stay unset.
+  //
+  // "Head" is the descendant-exclusion rule of plans/97 §6a, applied through the
+  // ONE engine predicate the web bridge and the MCP tokens resource also call: a
+  // published version ships as `<head>/<slug>`, and a version must never be
+  // picked as "the design system". With zero or one tokens asset — every catalog
+  // that never published, which is all of them today — `pickHeadAssetId` returns
+  // exactly what the `.find(…)` here returned before the rule existed.
+  const tokensAssets = assetIndex.assets.filter(a => a.type === 'tokens');
+  const headTokensId = pickHeadAssetId(tokensAssets.map(a => a.id));
+  const headTokensAsset = tokensAssets.find(a => a.id === headTokensId) ?? null;
+
+  const readAssetDoc = async (asset: CatalogAsset): Promise<unknown> =>
+    JSON.parse(await readFile(join(REPO_ROOT, asset.formats[0]!.url.replace(/^\//, '')), 'utf8'));
+
   let tokensDocCache: Promise<unknown> | null = null;
+  /** The HEAD document — the edit head, `-latest`. Never a published version. */
   function tokensDoc(): Promise<unknown> {
     tokensDocCache ??= (async () => {
-      const asset = assetIndex.assets.find(a => a.type === 'tokens');
-      if (!asset) return null;
-      return JSON.parse(await readFile(join(REPO_ROOT, asset.formats[0]!.url.replace(/^\//, '')), 'utf8'));
+      if (!headTokensAsset) return null;
+      return readAssetDoc(headTokensAsset);
     })().catch(() => null); // unavailable ≠ broken: everything token-y just degrades
     return tokensDocCache;
   }
+
+  /**
+   * The document THIS run renders against: the §6a ladder applied once, over the
+   * head's own ledger — `--designv=` → the manifest pin → the catalog's active
+   * version → the head.
+   *
+   * A catalog that never published carries no ledger, so this costs one empty
+   * read and returns the head object itself: an unversioned install renders
+   * byte-identically to before versions existed. A version that resolves has its
+   * asset tokens rewritten through the entry's pins (`applyPinnedAssets`), which
+   * is the same rewrite the web bridge does at load — so a `{asset.logo.*}` under
+   * a pinned version reaches the preserved bytes here too.
+   *
+   * An unresolvable version degrades to the head rather than to a blank render,
+   * and says so: an author who typed a slug and silently got a different design
+   * system has the one failure this shell refuses to be quiet about.
+   */
+  let resolvedDocCache: Promise<unknown> | null = null;
+  function resolvedDoc(): Promise<unknown> {
+    resolvedDocCache ??= (async () => {
+      const head = await tokensDoc();
+      const index = readVersionIndex(head);
+      const override = designVersion?.override ?? null;
+      const slug = resolveDesignVersion({ override, pin: designVersion?.pin ?? null, index });
+      // An override this catalog does not ship is ALWAYS said out loud, whatever
+      // the ladder lands on next. Warning only when it fell all the way to the
+      // head would swallow the typo whenever the tool carries a manifest pin: the
+      // author asked for one version, silently got another, and the flag they
+      // typed left no trace at all.
+      if (override && override !== DESIGN_VERSION_LATEST && !index.versions.some(v => v.slug === override)) {
+        host.log('warn', `--designv=${override} names no design-system version in this catalog — rendering against ${slug === DESIGN_VERSION_LATEST ? 'the edit head' : `"${slug}"`} instead.`);
+      }
+      if (slug === DESIGN_VERSION_LATEST) return head;
+      const entry = index.versions.find(v => v.slug === slug);
+      const asset = headTokensAsset ? assetById.get(versionAssetId(headTokensAsset.id, slug)) : undefined;
+      if (!entry || !asset) {
+        host.log('warn', `design-system version "${slug}" is listed but ships no tokens asset — rendering against the edit head instead.`);
+        return head;
+      }
+      try {
+        return applyPinnedAssets(await readAssetDoc(asset), entry.assets ?? []);
+      } catch (e) {
+        host.log('warn', `design-system version "${slug}" could not be read (${e instanceof Error ? e.message : e}) — rendering against the edit head instead.`);
+        return head;
+      }
+    })().catch(() => tokensDoc());
+    return resolvedDocCache;
+  }
+
   const tokenSets = new Map<string, TokenSet>(); // theme key ('' = default) → resolved set
   async function tokenSet(theme?: string): Promise<TokenSet> {
     const key = theme ?? '';
     let set = tokenSets.get(key);
-    if (!set) { set = createTokenSet(await tokensDoc(), { theme }); tokenSets.set(key, set); }
+    if (!set) { set = createTokenSet(await resolvedDoc(), { theme }); tokenSets.set(key, set); }
     return set;
   }
   host.tokens = {
@@ -277,10 +347,11 @@ export async function createCliBridge(
   // so a pen-tool hook computes identical geometry headlessly.
   host.geom = makeGeomApi();
 
-  // host.connectors (v1.106) — the engine's committed, export-safe connector SVG builder,
-  // attached verbatim (the SAME function the web bridge wraps via installToolApis), so a
-  // canvas tool's hooks.js renders identical connector geometry in a headless `--export`.
-  host.connectors = { build: buildConnectorSvg };
+  // host.connectors (v1.106; path heads + dash fitting v1.110) — the engine's committed,
+  // export-safe connector geometry, attached verbatim (the SAME factory the web bridge
+  // calls via installToolApis), so a canvas tool's hooks.js renders identical connector
+  // geometry, arrowheads and corner-fitted dashes in a headless `--export`.
+  host.connectors = makeConnectorsApi();
 
   // host.text — text-to-path (HarfBuzz WASM), the SAME shaping the web shell uses, so a
   // tool that outlines text via host.text renders identically in the terminal. Without

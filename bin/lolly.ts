@@ -112,6 +112,10 @@ Export options:
   --password-stdin         read the password from stdin instead of argv
   --depth=8|16|float       requested bits per channel; --hdr=1 for the float view transform
   --lang=<xx>              use a tool's manifest translation sidecar
+  --designv=<slug|latest>  the design-system version to render against: a published
+                           version's slug, or \`latest\` for the edit head. Beats a
+                           tool's own pin; a slug this catalog does not ship falls
+                           through to the pin, then the head, and says so either way
   --verify                 for a file utility: print a per-file line when no check failed
 
 Link options:

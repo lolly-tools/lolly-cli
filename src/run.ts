@@ -203,10 +203,6 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // press condition, matching URL mode's reserved `profile` param exactly (contract
   // B1) — one word cannot mean two things.
   const profile = await readProfile(params['user-profile']);
-  // Thread the manifest's network.allowlist into host.net (same per-tool gate the
-  // web view applies post-load) — without it every host.net fetch on the CLI
-  // rejects, breaking the one-render-path parity for network-capable tools.
-  const host = await createCliBridge({ dom, profile, networkAllowlist: tool.manifest.network?.allowlist });
 
   // Warn about flags this tool has no use for. The docs promise flags are validated
   // against the manifest; they were simply swallowed, so a typo (`--urll=…`) rendered
@@ -215,8 +211,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
 
   // `--rate-card=path.json`: load + validate the printer's own card and confirm it in
   // one line. Warn-and-continue on any problem — the card is not required to render, and
-  // this phase computes no prices with it (that is a later phase). Read here, after the
-  // host is up, so a bad card never blocks the render.
+  // this phase computes no prices with it (that is a later phase).
   await loadRateCardCli(params['rate-card']);
 
   // A password-protected share link (`zx=…`) carries the WHOLE state encrypted. The web
@@ -249,10 +244,31 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // different transport, so a packed share link must run identically here
   // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(rawQuery);
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam, designVersion: designvParam } = parseUrlState(
     query,
     tool.manifest,
   );
+
+  // The host is built HERE, after the query is decrypted, expanded and parsed,
+  // because `--designv=` is a render param like any other: the design-system
+  // version this run resolves against is read off the same parsed state a packed
+  // or password-protected link carries, not off raw argv. Nothing above needs a
+  // host, and building it later means a wrong link password fails before the
+  // catalog index is read rather than after.
+  //
+  // Thread the manifest's network.allowlist into host.net (same per-tool gate the
+  // web view applies post-load) — without it every host.net fetch on the CLI
+  // rejects, breaking the one-render-path parity for network-capable tools.
+  const host = await createCliBridge({
+    dom,
+    profile,
+    networkAllowlist: tool.manifest.network?.allowlist,
+    // The ladder's two upper rungs (plans/97 §6a); the bridge reads the active
+    // version and the head off the catalog's own ledger. `--designv=latest` is
+    // the documented "test against the edit head" lever and beats the pin.
+    designVersion: { override: designvParam, pin: tool.manifest.designVersion ?? null },
+  });
+
   // `--input.<id>=<value>` — the explicit input namespace (contract B7). Never
   // intercepted by reserved handling, so the eight shipped tools that declare a
   // `width`/`height`/`format` input stay reachable without renaming inputs whose URLs
