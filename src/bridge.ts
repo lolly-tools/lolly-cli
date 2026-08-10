@@ -657,7 +657,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // EMF is pure bytes built from SVG primitives — no rasteriser needed, so
         // it joins svg as a CLI-native format for native-<svg> tools. Live <text>
         // is outlined in the walk: host.text (createNodeTextAPI above) shapes any
-        // run whose family resolves to an sfnt on disk (e.g. the Outfit platform
+        // run whose family resolves to an sfnt on disk (e.g. the platform SUSE
         // face); an unresolvable family throws (the always-text-as-paths guard).
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('EMF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
