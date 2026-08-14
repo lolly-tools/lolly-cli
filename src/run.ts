@@ -242,7 +242,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   }
   // Expand a packed `z=…` param back into a plain query — the CLI is URL mode under a
   // different transport, so a packed share link must run identically here
-  // (`lolly layout-studio --z=1eJ…`). A no-op for ordinary readable params.
+  // (`lolly design --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(rawQuery);
   const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam, designVersion: designvParam } = parseUrlState(
     query,
