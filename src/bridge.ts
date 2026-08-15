@@ -569,7 +569,7 @@ export async function createCliBridge(
  * The vector formats below (svg / emf / eps / dxf) are CLI-native only for tools whose
  * template IS an `<svg>` — a browser-free vector path with no layout engine. The old
  * test for that was `node.querySelector('svg')`, which finds ANY descendant, and that
- * is wrong now that an HTML-layout tool can contain one: Layout Studio's vector path
+ * is wrong now that an HTML-layout tool can contain one: Design's vector path
  * boxes emit an inline `<svg><path>` per shape, so a poster with one pen shape used to
  * export as that ONE shape, with the artboard, the background and every other box
  * silently dropped — a plausible-looking wrong file, which is worse than a refusal.
