@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's exit-code taxonomy — frozen at GA (plans/73-cli-ga-contract.md §5.1).
+ * The CLI's exit-code taxonomy - frozen at GA (plans/73-cli-ga-contract.md §5.1).
  *
  * Eight codes, not a boolean. The distinctions that earn their place:
- *   • 2 vs 1     — "you used it wrong" is not "it ran and failed"; a CI loop must be
+ *   • 2 vs 1 - "you used it wrong" is not "it ran and failed"; a CI loop must be
  *                  able to tell a typo'd path from a broken file.
- *   • 3 vs 1     — "impossible in THIS installation" is the retry-on-another-runner
+ *   • 3 vs 1 - "impossible in THIS installation" is the retry-on-another-runner
  *                  code. No Chromium here may well mean Chromium over there.
- *   • 4 vs 1     — a protective check said no. Nothing is wrong with the machine;
+ *   • 4 vs 1 - a protective check said no. Nothing is wrong with the machine;
  *                  something is wrong with the artefact or the request.
- *   • 5 vs 1     — `validate` finding no credential is a legitimate negative answer,
+ *   • 5 vs 1 - `validate` finding no credential is a legitimate negative answer,
  *                  not a failure.
- *   • 70 vs 1    — an unclassified exception is a bug in Lolly (sysexits.h
+ *   • 70 vs 1 - an unclassified exception is a bug in Lolly (sysexits.h
  *                  EX_SOFTWARE). Distinct so an agent stops retrying it.
  *
  * These meanings cannot change without a major version. Adding a NEW code is
@@ -93,7 +93,7 @@ const BUG_TYPES = new Set(['TypeError', 'RangeError', 'ReferenceError', 'SyntaxE
  * Order matters: an explicit `exit` wins, then the typed sentinels the render path
  * already sets (`FORMAT_UNAVAILABLE`, `NEEDS_BROWSER`, `RenderIntegrityError`,
  * `FormatMismatchError`, `DeepSourceError`, `BrowserError`), then the programmer-error
- * types, and only then the generic 1. Nothing here reads prose — every branch keys on
+ * types, and only then the generic 1. Nothing here reads prose - every branch keys on
  * a name or a code, the lesson needsBrowserTier already learned.
  */
 export function exitCodeFor(err: unknown): number {

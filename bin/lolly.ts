@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MPL-2.0
 /**
- * lolly CLI — the entry point.
+ * lolly CLI - the entry point.
  *
  * The usage text below is the REAL one: USAGE is printed by `lolly --help`, exit codes
  * and all (they used to live only in docs/cli.md, where a script author never sees them).
@@ -13,7 +13,7 @@
  * TWO RULES this file exists to enforce (plans/73-cli-ga-contract.md §0):
  *   • stdout carries the payload and nothing else; every diagnostic goes to stderr.
  *   • NOTHING here calls process.exit() after writing to stdout. An exit() right after
- *     a pipe write discards the unflushed remainder — a 638 KB PNG arrived as 65536
+ *     a pipe write discards the unflushed remainder - a 638 KB PNG arrived as 65536
  *     bytes that way. The exit code is set on process.exitCode and the process ends
  *     when the event loop drains, which is what flushes the pipe.
  */
@@ -149,10 +149,10 @@ const args = argv.slice(2);
 keepConsoleOffStdout();
 // A downstream reader that closes early (`lolly list | head -1`) makes the next write to
 // stdout raise EPIPE. Nothing subscribed to the stream's 'error' event, so that surfaced
-// as Node's raw "Unhandled 'error' event" stack trace and exit 1 — which under
+// as Node's raw "Unhandled 'error' event" stack trace and exit 1 - which under
 // `set -o pipefail` fails the whole pipeline for an ordinary `| head`. A closed pipe is
 // not a failure of this run: it ends quietly, keeping whatever exit code the work had.
-// Swallowed rather than exited on, because §0/B3 forbids process.exit() around stdout —
+// Swallowed rather than exited on, because §0/B3 forbids process.exit() around stdout - 
 // the event loop drains and the process ends with the code the work already set. Every
 // other stdout error still reaches the caller through writeOut's rejected promise.
 process.stdout.on('error', (err: NodeJS.ErrnoException) => {
@@ -161,7 +161,7 @@ process.stdout.on('error', (err: NodeJS.ErrnoException) => {
 // §5.2 says a `--json` run puts a complete envelope on stdout on EVERY path. The parse
 // below can itself throw (a bare value-flag is exit 2), and `beginCommand` had not run
 // yet, so `lolly validate f.png --json --require > r.json` left a zero-byte file and an
-// agent reading stdout got EOF — the exact failure the envelope was written to remove.
+// agent reading stdout got EOF - the exact failure the envelope was written to remove.
 // A raw argv scan is enough: `--json` has one spelling and no bare-value trap. The
 // command name is re-set accurately by main() once the parse succeeds; this pre-set is
 // only the fallback for a failure that happens before that.
@@ -230,7 +230,7 @@ async function main(): Promise<void> {
   // Which command this is, and whether stdout must carry the §5.2 envelope. Recorded
   // before any work, so the top-level catch can name the command in a failure envelope
   // even when the throw happened before the command function was reached. A bare tool
-  // id reports as `describe`/`run` — the verb it is sugar for — not as its own name.
+  // id reports as `describe`/`run` - the verb it is sugar for - not as its own name.
   const VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke']);
   beginCommand(VERBS.has(cmd ?? '') ? cmd! : 'run', g.json);
 
@@ -284,7 +284,7 @@ async function main(): Promise<void> {
   // run, WITHOUT rendering it. It takes the same render flags a real run takes (and the
   // same pasted-URL form), because preflighting settings other than the ones a render
   // would use is worthless. The engine owns the rules; this shell only collects the
-  // facts. Counts and findings only — there is no rate, price or currency in it.
+  // facts. Counts and findings only - there is no rate, price or currency in it.
   if (cmd === 'preflight') {
     const rest = args.slice(args.indexOf('preflight') + 1);
     const { preflightCli } = await import('../src/preflight.ts');
@@ -329,7 +329,7 @@ async function main(): Promise<void> {
   }
 
   // `smoke`: render EVERY catalog tool at manifest defaults to its first Node-native
-  // format, ✓/✗ per tool — the catalog-wide gate CI runs so a hooks.js regression can
+  // format, ✓/✗ per tool - the catalog-wide gate CI runs so a hooks.js regression can
   // never ship a tool that renders blank.
   if (cmd === 'smoke') {
     const { smokeCli } = await import('../src/smoke.ts');
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
   // ── a pasted lolly.tools link ─────────────────────────────────────────────
   // A fully-configured tool URL: parse it into a toolId + query and run it as if the
   // query were --flags (the URL-mode-as-CLI principle). Any --flag=val after the URL
-  // overrides the URL's params — "the URL as settings, then edit".
+  // overrides the URL's params - "the URL as settings, then edit".
   if (/^https?:\/\//i.test(cmd ?? '')) {
     const ref = parseToolUrl(cmd!);
     if (!ref) throw usageError(`Not a recognised Lolly tool URL: ${cmd}`, 'BAD_URL');
@@ -350,7 +350,7 @@ async function main(): Promise<void> {
     // `--user-profile`, so a share link and a flag can no longer mean different things.
     const merged: Record<string, string> = { ...urlParams, ...flags };
     note(`→ ${ref.toolId}${ref.format ? ` (${ref.format})` : ''} from URL`);
-    // In URL mode `export` is a bare PRESENCE flag ("auto-download on open") — the web
+    // In URL mode `export` is a bare PRESENCE flag ("auto-download on open") - the web
     // Share dialog's default link emits `…&format=png&export`, so URLSearchParams gives
     // export=''. That empty string is NOT a format: coalesce it to undefined so the URL's
     // own `format=` param (kept in the params, read by runToolCli) or the path-segment

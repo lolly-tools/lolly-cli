@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * Outline the live `<text>` runs of a native-`<svg>` template into `<path>` glyphs,
- * using host.text (HarfBuzz) — the CLI half of "vector output is text as paths"
+ * using host.text (HarfBuzz) - the CLI half of "vector output is text as paths"
  * (plans/73-cli-ga-contract.md §6a).
  *
  * Why this exists: until GA the CLI's svg branch serialised jsdom's `<text>` verbatim,
  * so a recipient without the font opened the file and saw a different design, with
- * nothing to say so — the same silent-wrong-output class the fail-loud work removed.
+ * nothing to say so - the same silent-wrong-output class the fail-loud work removed.
  * EMF, EPS and DXF already outline in this very process through svgDomToIr and the same
  * host.text, so svg was the odd one out on its own shell, not a capability gap.
  *
@@ -20,7 +20,7 @@
  *     `textLength`, or a `textPath`. Guessing a baseline offset would move glyphs by a
  *     few pixels in a file nobody would think to check, which is worse than a warning.
  *
- * Font resolution goes through `host.text.fontUrl(family, {weight, italic})` — the
+ * Font resolution goes through `host.text.fontUrl(family, {weight, italic})` - the
  * headless registry over the catalog's static sfnts and the shell's platform face. The
  * web shell's font-registry is deliberately NOT used here: it fetches URLs and knows
  * about IndexedDB user fonts, neither of which exists in this process.
@@ -70,7 +70,7 @@ function prop(el: Element, name: InheritedProp, getComputed: ((e: Element) => CS
   return typeof v === 'string' && v ? v : null;
 }
 
-/** First number of an SVG coordinate list ("10 20" / "10,20") — 0 when absent. */
+/** First number of an SVG coordinate list ("10 20" / "10,20") - 0 when absent. */
 function coord(v: string | null): number {
   if (!v) return 0;
   const n = parseFloat(String(v).trim());
@@ -105,7 +105,7 @@ export function letterSpacingPx(v: string | null, fontSize: number): number {
   return n;   // px (or unitless user units, which are px in SVG user space)
 }
 
-/** Why this run cannot be placed exactly — null when it can. */
+/** Why this run cannot be placed exactly - null when it can. */
 export function unplaceableReason(el: Element): string | null {
   if (el.children.length) return 'the run contains tspan/textPath children';
   for (const a of ['dominant-baseline', 'alignment-baseline']) {
@@ -132,7 +132,7 @@ export async function outlineSvgText(
   const text = host.text;
   const doc = svg.ownerDocument;
   if (!text || !doc) {
-    return result;   // no shaping in this host — the caller reports it once, not per run
+    return result;   // no shaping in this host - the caller reports it once, not per run
   }
   const getComputed = opts.getComputedStyle ?? null;
   const runs = Array.from(svg.querySelectorAll('text'));
@@ -194,7 +194,7 @@ export async function outlineSvgText(
       if (!DROP_ON_PATH.has(attr.name)) path.setAttribute(attr.name, attr.value);
     }
     // `fill` is inherited in SVG, and a <text> commonly takes it from an ancestor <g>
-    // — which still wraps the path, so nothing needs copying. Only an ancestor default
+    // - which still wraps the path, so nothing needs copying. Only an ancestor default
     // of "no fill attribute anywhere" would paint black, which is the SVG default too.
     const own = el.getAttribute('transform');
     path.setAttribute('transform', `${own ? own + ' ' : ''}translate(${round(tx)} ${round(y)})`);

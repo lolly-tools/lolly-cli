@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's raster/PDF/video tier — two levels, smallest-footprint first:
+ * The CLI's raster/PDF/video tier - two levels, smallest-footprint first:
  *
  *   Tier A (no browser):  PNG from an SVG-native tool, rasterised with resvg (pure
- *                         Rust — a few-MB native module, not a browser). Instant,
+ *                         Rust - a few-MB native module, not a browser). Instant,
  *                         always available, zero setup. Covers most of the catalog.
  *   Tier B (headless):    everything else (HTML-layout raster, jpg/webp, pdf, video)
- *                         — drive the built web shell in a scoped Chromium so the
+ * - drive the built web shell in a scoped Chromium so the
  *                         bytes match a web/desktop Download exactly (webshell-render).
  *
  * run.ts calls this only for non-engine-native formats; svg/emf/eps + data still go
@@ -44,43 +44,43 @@ export async function renderRaster(opts: {
   const { runtime, dom, manifest, dims } = opts;
   const fmt = opts.format.toLowerCase();
 
-  // Tier A — PNG from an SVG-native tool: resvg rasterises the engine's own SVG. No
+  // Tier A - PNG from an SVG-native tool: resvg rasterises the engine's own SVG. No
   // browser, no built web shell. jpg/webp/pdf/video fall through to Tier B (resvg is
   // PNG-only, and layout formats need a real engine). A durable-credential (neural
-  // TrustMark) request still falls through — that encoder is a browser feature.
+  // TrustMark) request still falls through - that encoder is a browser feature.
   //
   // The pixel-watermark (imprint) used to fall through too, and that stopped being
   // acceptable the moment the Imprint became default-on for CLI renders (contract §12
   // O2): every `--export=png` would have demanded the scoped Chromium for a mark the
   // caller never asked for. It is embedded HERE instead, browser-free, through the
   // engine's own DOM-free watermark maths (rasterizeSvgToImprintedPng). A frame below
-  // the detection floor comes back null and writes the ordinary PNG — the browser
+  // the detection floor comes back null and writes the ordinary PNG - the browser
   // could not have marked it either.
   //
   // Print prep falls through too, as a BACKSTOP. resvg is handed the tool's own SVG and
   // knows nothing about a bleed box or crop marks, so Tier A used to accept --bleed /
   // --marks and produce bytes identical to a run without them: no marks, no warning,
   // exit 0. run.ts now refuses those flags outright for any format that cannot carry
-  // page geometry (PRINT_PREP_FORMATS), so this should be unreachable — it stays so the
+  // page geometry (PRINT_PREP_FORMATS), so this should be unreachable - it stays so the
   // silent no-op cannot come back if that allowlist ever widens.
   if (eligibleForResvgPng(fmt, dims)) {
     const svg = await tryRenderSvg(runtime, dom);
     if (svg) {
       // Shared Tier-A rasteriser (node-shell): imprint + physical-unit DPI, identical to the
-      // TUI. `imprinted` reflects whether the mark was actually embedded — the imprinted path
+      // TUI. `imprinted` reflects whether the mark was actually embedded - the imprinted path
       // returns the plain PNG (no mark) below the watermark detection floor.
       const { bytes, imprinted } = await rasterizeTierAPng(svg, dims, manifest);
       return { bytes, usedBrowser: false, imprinted };
     }
   }
 
-  // Tier B — drive the built web shell in the scoped Chromium; capture the exact bytes
+  // Tier B - drive the built web shell in the scoped Chromium; capture the exact bytes
   // its own export path downloads (one render path, no drift vs web/desktop).
   const query = serializeUrlState(runtime.getModel() as never);
   const MOTION = ['gif', 'apng', 'webm', 'mp4'];
   // PROTOTYPE opt-in: real Playwright screenshots instead of dom-to-image for the
   // frame-by-frame capture (see renderVideoViaScreenshot's doc comment). Motion
-  // formats only, and only when explicitly requested — every other case, and the
+  // formats only, and only when explicitly requested - every other case, and the
   // default with this unset, still goes through renderViaWebShell unchanged.
   if (MOTION.includes(fmt) && process.env.LOLLY_VIDEO_CAPTURE === 'screenshot') {
     const { renderVideoViaScreenshot } = await import('@lolly-tools/node-shell/webshell-render');

@@ -17,7 +17,7 @@ import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet, C2paSignOpts,
 } from '@lolly-tools/core/host-v1';
-// Deep image encoders (v1.100 host.codec) — off the @lolly/engine barrel by
+// Deep image encoders (v1.100 host.codec) - off the @lolly/engine barrel by
 // design, imported deep-relative like node-shell/raster.ts does for packExr.
 import { encodeExr, encodeRadiance, encodePng16, encodeDither8 } from '../../../engine/src/deep-encode.ts';
 // PDF metadata inspect/strip is pure pdf-lib (no DOM), so the lean node CLI
@@ -31,21 +31,21 @@ import { createPdfAPI } from '../../web/src/bridge/pdf.ts';
 // `@lolly-tools/node-shell/pptx` import would dangle in the bundle.
 import { createPptxAPI } from '../../../packages/node-shell/src/pptx.ts';
 // host.net allowlisted fetch is DOM-free too (global fetch + TransformStream, both
-// Node ≥18 globals), so every shell builds it from one module — the prefix-match
+// Node ≥18 globals), so every shell builds it from one module - the prefix-match
 // rules and the 64 MB counting-stream cap can never drift. RELATIVE for the same
 // MCP-bundle reason as above.
 import { createNetAPI } from '../../../packages/node-shell/src/net.ts';
 // SVG→EMF IR walk is DOM-light (attribute reads), so it runs under jsdom for
-// native-SVG tools — the same "no layout engine" constraint as the svg branch.
+// native-SVG tools - the same "no layout engine" constraint as the svg branch.
 import { svgDomToIr } from '../../web/src/bridge/svg-ir.ts';
 
-// Repo root holding catalog/ — the shared resolver (LOLLY_ROOT → marker walk → cwd;
+// Repo root holding catalog/ - the shared resolver (LOLLY_ROOT → marker walk → cwd;
 // see packages/node-shell/src/repo-root.ts for why a fixed `../../..` can't work in
 // the bundled Vercel function). RELATIVE import on purpose: this file is inlined into
 // that function by scripts/build-mcp-fn.ts, whose esbuild config leaves bare package
-// specifiers external — a `@lolly-tools/node-shell` import would dangle in the bundle.
+// specifiers external - a `@lolly-tools/node-shell` import would dangle in the bundle.
 import { repoRoot } from '../../../packages/node-shell/src/repo-root.ts';
-// host.text (HarfBuzz text-to-path). RELATIVE for the same reason as repo-root above —
+// host.text (HarfBuzz text-to-path). RELATIVE for the same reason as repo-root above - 
 // this file is inlined into the Vercel MCP function, where a bare @lolly-tools/node-shell
 // specifier would dangle. Lazily loads its WASM on first shape, so attaching it is free.
 import { createNodeTextAPI } from '../../../packages/node-shell/src/text.ts';
@@ -68,17 +68,17 @@ import { unavailableHere } from './exit-codes.ts';
 const REPO_ROOT = repoRoot();
 
 /**
- * Capabilities THIS shell can actually fulfil — the CLI's answer to the web shell's
+ * Capabilities THIS shell can actually fulfil - the CLI's answer to the web shell's
  * PROVIDED_CAPABILITIES (shells/web/src/bridge/capabilities-provided.ts), which the
  * gallery uses to disable tools it cannot run. The CLI never declared its set at all,
  * so a `screen`/`microphone` tool rendered a misleading placeholder and exited 0
  * instead of refusing (contract B11).
  *
  * What is in and why:
- *   • network  — host.net, allowlisted per manifest.
- *   • wasm     — host.text's HarfBuzz WASM loads in Node.
- *   • compose  — host.compose renders child tools in-process.
- *   • capture  — host.capture.page drives the scoped Chromium. Present even when no
+ *   • network - host.net, allowlisted per manifest.
+ *   • wasm - host.text's HarfBuzz WASM loads in Node.
+ *   • compose - host.compose renders child tools in-process.
+ *   • capture - host.capture.page drives the scoped Chromium. Present even when no
  *                browser is installed: that is a "not installed HERE yet" (exit 3 with
  *                `lolly install-browser`), not "this shell cannot do it".
  * What is out: clipboard (throws by design, §4.4), camera/microphone/screen (no
@@ -97,7 +97,7 @@ interface CatalogAssetFormat {
   height?: number;
 }
 
-/** A catalog asset record — the shape validate-catalog.js guarantees on disk. */
+/** A catalog asset record - the shape validate-catalog.js guarantees on disk. */
 interface CatalogAsset {
   id: string;
   name?: string;
@@ -108,7 +108,7 @@ interface CatalogAsset {
   formats: CatalogAssetFormat[];
 }
 
-/** The CLI's private extensions to AssetsAPI — stubs mirroring the web shell's
+/** The CLI's private extensions to AssetsAPI - stubs mirroring the web shell's
  *  user-image surface (see below); never part of the public HostV1 contract. */
 interface CliAssetsAPI extends AssetsAPI {
   _listUserAssets(): Promise<unknown[]>;
@@ -126,11 +126,11 @@ interface CliExportRenderOpts extends ExportOpts {
   dataText?: string;
   dataMime?: string;
   unit?: string;
-  /** Resolved Imprint decision forwarded by run.ts — consumed only by the BMP branch
+  /** Resolved Imprint decision forwarded by run.ts - consumed only by the BMP branch
    *  (the pixel watermark; container-less BMP carries no C2PA). Default-on when absent. */
   imprint?: boolean;
   /** The `hdr=` request, forwarded by run.ts. The canonical HostV1 ExportOpts has no
-   *  HDR dials (the web shell carries its own extension too — shells/web/src/bridge/
+   *  HDR dials (the web shell carries its own extension too - shells/web/src/bridge/
    *  export.ts's ExportOpts), so this is the CLI's local extension of the same shape,
    *  in url-mode's 0–100 author dial units. Absent ⇒ SDR ⇒ exr/hdr refuse. */
   hdr?: { targets?: readonly string[]; peakNits?: number; reach?: number; lift?: number; richness?: number } | null;
@@ -141,14 +141,14 @@ interface CliExportRenderOpts extends ExportOpts {
   onTextFallback?: (run: { text: string; reason: string }) => void;
 }
 
-/** Element type of parseIconThemesDoc's result — derived so no engine-internal
+/** Element type of parseIconThemesDoc's result - derived so no engine-internal
  *  type name has to be imported. */
 type IconThemeDef = ReturnType<typeof parseIconThemesDoc>[number];
 
 interface CliBridgeOpts {
   profile?: Profile;
   dom: { window: Window & typeof globalThis };
-  /** The loaded manifest's `network.allowlist` — what host.net may fetch this
+  /** The loaded manifest's `network.allowlist` - what host.net may fetch this
    *  run. Absent/empty ⇒ every host.net fetch rejects (same as the web shell). */
   networkAllowlist?: readonly string[];
   /**
@@ -177,7 +177,7 @@ export async function createCliBridge(
     shell: 'cli',
     capabilities: CLI_CAPABILITIES,
     // EVERY level goes to stderr (contract B4). `info`/`debug` used to go to stdout,
-    // where a tool's one chatty log line interleaved itself into a piped PNG — and
+    // where a tool's one chatty log line interleaved itself into a piped PNG - and
     // tools ship as data from another repository, so this shell cannot assume they are
     // quiet. stdout carries the payload and nothing else.
     log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, ctx?: object): void => {
@@ -193,7 +193,7 @@ export async function createCliBridge(
     subscribe() { return () => {}; },
   };
 
-  // Deep image codecs (v1.100) — the same pure engine writers the web shell
+  // Deep image codecs (v1.100) - the same pure engine writers the web shell
   // wraps, so a tool that hands over a float frame encodes identically headless.
   // (No native deps; the writers are pure TypeScript.)
   host.codec = {
@@ -203,7 +203,7 @@ export async function createCliBridge(
     dither8: async (f, o) => encodeDither8({ ...f, space: f.space ?? 'srgb-linear' }, o),
   };
 
-  // Layered-bitmap write-back (v1.102) — the same engine PSD writer the web
+  // Layered-bitmap write-back (v1.102) - the same engine PSD writer the web
   // shell wraps, so `--export`ing a layered PSD is byte-identical headless.
   host.layers = {
     writePsd: async (doc) => {
@@ -236,7 +236,7 @@ export async function createCliBridge(
   }
 
   // Colour treatments for raster photos, from the catalog's palette asset tagged
-  // "photo-treatments" — the raster analogue of iconThemes() above.
+  // "photo-treatments" - the raster analogue of iconThemes() above.
   let photoTreatmentsCache: Promise<ReturnType<typeof parsePhotoTreatmentsDoc>> | null = null;
   function photoTreatments(): Promise<ReturnType<typeof parsePhotoTreatmentsDoc>> {
     photoTreatmentsCache ??= (async () => {
@@ -248,7 +248,7 @@ export async function createCliBridge(
     return photoTreatmentsCache;
   }
 
-  // Design tokens — the catalog's HEAD `type:'tokens'` asset, read from disk and
+  // Design tokens - the catalog's HEAD `type:'tokens'` asset, read from disk and
   // resolved by the engine per theme. Missing or unreadable → an empty set:
   // token-bound colour inputs fall back to their cached hex and the semantic
   // brand vars (applyBrandVars below) stay unset.
@@ -256,8 +256,8 @@ export async function createCliBridge(
   // "Head" is the descendant-exclusion rule of plans/97 §6a, applied through the
   // ONE engine predicate the web bridge and the MCP tokens resource also call: a
   // published version ships as `<head>/<slug>`, and a version must never be
-  // picked as "the design system". With zero or one tokens asset — every catalog
-  // that never published, which is all of them today — `pickHeadAssetId` returns
+  // picked as "the design system". With zero or one tokens asset - every catalog
+  // that never published, which is all of them today - `pickHeadAssetId` returns
   // exactly what the `.find(…)` here returned before the rule existed.
   const tokensAssets = assetIndex.assets.filter(a => a.type === 'tokens');
   const headTokensId = pickHeadAssetId(tokensAssets.map(a => a.id));
@@ -267,7 +267,7 @@ export async function createCliBridge(
     JSON.parse(await readFile(join(REPO_ROOT, asset.formats[0]!.url.replace(/^\//, '')), 'utf8'));
 
   let tokensDocCache: Promise<unknown> | null = null;
-  /** The HEAD document — the edit head, `-latest`. Never a published version. */
+  /** The HEAD document - the edit head, `-latest`. Never a published version. */
   function tokensDoc(): Promise<unknown> {
     tokensDocCache ??= (async () => {
       if (!headTokensAsset) return null;
@@ -278,14 +278,14 @@ export async function createCliBridge(
 
   /**
    * The document THIS run renders against: the §6a ladder applied once, over the
-   * head's own ledger — `--designv=` → the manifest pin → the catalog's active
+   * head's own ledger - `--designv=` → the manifest pin → the catalog's active
    * version → the head.
    *
    * A catalog that never published carries no ledger, so this costs one empty
    * read and returns the head object itself: an unversioned install renders
    * byte-identically to before versions existed. A version that resolves has its
    * asset tokens rewritten through the entry's pins (`applyPinnedAssets`), which
-   * is the same rewrite the web bridge does at load — so a `{asset.logo.*}` under
+   * is the same rewrite the web bridge does at load - so a `{asset.logo.*}` under
    * a pinned version reaches the preserved bytes here too.
    *
    * An unresolvable version degrades to the head rather than to a blank render,
@@ -338,37 +338,37 @@ export async function createCliBridge(
     themes: async () => (await tokenSet()).themes(),
   };
 
-  // Perceptual colour tools (v1.40) — pure engine math, attached verbatim
+  // Perceptual colour tools (v1.40) - pure engine math, attached verbatim
   // (same object the web bridge attaches, so shells can never drift).
   host.color = makeColorApi();
 
-  // Vector geometry (v1.64) — the geometry kernel behind SVG path-data strings.
+  // Vector geometry (v1.64) - the geometry kernel behind SVG path-data strings.
   // Pure engine math, attached verbatim (the SAME object the web bridge attaches),
   // so a pen-tool hook computes identical geometry headlessly.
   host.geom = makeGeomApi();
 
-  // host.connectors (v1.106; path heads + dash fitting v1.110) — the engine's committed,
+  // host.connectors (v1.106; path heads + dash fitting v1.110) - the engine's committed,
   // export-safe connector geometry, attached verbatim (the SAME factory the web bridge
   // calls via installToolApis), so a canvas tool's hooks.js renders identical connector
   // geometry, arrowheads and corner-fitted dashes in a headless `--export`.
   host.connectors = makeConnectorsApi();
 
-  // host.text — text-to-path (HarfBuzz WASM), the SAME shaping the web shell uses, so a
+  // host.text - text-to-path (HarfBuzz WASM), the SAME shaping the web shell uses, so a
   // tool that outlines text via host.text renders identically in the terminal. Without
   // it, brand-lockup (and any host.text-in-hooks tool) throws in onInit and emits an
   // empty SVG. Fonts resolve off disk under the repo root (see text.ts). Node-only fonts
   // are all sfnt; the WASM loads lazily on first shape.
   host.text = createNodeTextAPI({ repoRoot: REPO_ROOT });
 
-  // host.audio (v1.71) — the SAME per-frame analysis the web shell runs (the engine's
+  // host.audio (v1.71) - the SAME per-frame analysis the web shell runs (the engine's
   // analysePcm), so an audio-reactive tool draws identical frames headlessly. The
   // decoder is what differs and it is narrow on purpose: WAV plus our own ZzFXM
   // songs, with no shelling out to ffmpeg, so a headless render never silently
   // depends on whatever binary is on PATH. Anything needing a platform codec (mp3,
-  // aac, opus) rejects by name — see packages/node-shell/src/audio.ts.
+  // aac, opus) rejects by name - see packages/node-shell/src/audio.ts.
   host.audio = createNodeAudioAPI({ repoRoot: REPO_ROOT });
 
-  // host.images — decode/resize/encode, backed by sharp (native codecs; reads HEIC/AVIF/
+  // host.images - decode/resize/encode, backed by sharp (native codecs; reads HEIC/AVIF/
   // TIFF, writes the web-safe three). Without it a converter tool like convert-image can
   // only throw, which is what the CLI used to do. ATTACHED ONLY IF sharp resolves: the
   // contract is optional and tools feature-detect it, so absent is a defined state and
@@ -376,17 +376,17 @@ export async function createCliBridge(
   const images = createNodeImagesAPI();
   if (images) host.images = images;
 
-  // host.net — allowlisted fetch for tools that declared the 'network' capability,
+  // host.net - allowlisted fetch for tools that declared the 'network' capability,
   // built per-invocation from the loaded manifest's network.allowlist (callers thread
   // it in via CliBridgeOpts). Deny happens before any I/O, so an empty/absent allowlist
-  // means the API exists but every fetch rejects — identical fail-closed stance to web.
+  // means the API exists but every fetch rejects - identical fail-closed stance to web.
   host.net = createNetAPI({ allowlist: networkAllowlist });
 
   host.assets = {
     async get(id) {
       // A PROCEDURAL asset: `zzfxm:<seed>[:<style>]` names a song that is
       // synthesised on demand, not a file the catalog stores. It resolves to
-      // ITSELF — url === id — exactly as the web bridge does, so a headless render
+      // ITSELF - url === id - exactly as the web bridge does, so a headless render
       // of a project carries the same bed marker a browser render does. Without
       // it the engine's resolveOne throws "Asset not in catalog", nulls the field
       // before hooks run, and the bed silently disappears from the output.
@@ -403,8 +403,8 @@ export async function createCliBridge(
       }
       // A presentation modifier can ride in the id, baked in at resolve time
       // (same contract as the web bridge). An id carries at most one:
-      //   `<baseId>?theme=<themeId>`  — themable two-colour icon pairing
-      //   `<baseId>?treatment=<id>`   — raster photo colour treatment
+      //   `<baseId>?theme=<themeId>` - themable two-colour icon pairing
+      //   `<baseId>?treatment=<id>` - raster photo colour treatment
       const { baseId: themedBase, theme } = parseThemedAssetId(id);
       const { baseId: treatedBase, treatment } = parseTreatedAssetId(id);
       const baseId = theme ? themedBase : treatedBase;
@@ -440,7 +440,7 @@ export async function createCliBridge(
       if (treatment && meta.type === 'raster') {
         const def = (await photoTreatments()).find(t => t.id === treatment);
         // Fall back to a sibling format's dims when the primary format omits them
-        // (jpg entries usually do) — otherwise the bake no-ops and the untreated
+        // (jpg entries usually do) - otherwise the bake no-ops and the untreated
         // photo is served. Same reasoning as the web bridge.
         const dimSrc = (fmt.width && fmt.height) ? fmt : meta.formats.find(f => f.width && f.height);
         const w = dimSrc?.width, h = dimSrc?.height;
@@ -495,7 +495,7 @@ export async function createCliBridge(
     },
 
     // The user-image library (device upload → downscale → IndexedDB) is a GUI
-    // concern. The CLI is ephemeral and headless, so it has no user images —
+    // concern. The CLI is ephemeral and headless, so it has no user images - 
     // these stubs keep the internal surface consistent with the web bridge.
     async _listUserAssets() { return []; },
     async _userAssetsCount() { return 0; },
@@ -503,7 +503,7 @@ export async function createCliBridge(
     async _deleteUserAsset() { /* no-op: no user images in CLI */ },
   };
 
-  // host.state — in memory by default (a CLI invocation is ephemeral), on DISK when
+  // host.state - in memory by default (a CLI invocation is ephemeral), on DISK when
   // the machine names a state directory (contract §1.5/B14). Opt-in on purpose: a
   // render must not leave files in $HOME nobody asked for (non-goal §8.7), but a tool
   // that saves state was previously unscriptable, because every run started empty.
@@ -558,24 +558,24 @@ export async function createCliBridge(
   };
 
   // CLI export covers everything producible without a layout/paint engine:
-  //   • text / data — html, svg, json, csv, ics, vcf (the engine hydrates these)
+  //   • text / data - html, svg, json, csv, ics, vcf (the engine hydrates these)
   // Raster (png/jpg/webp/avif/ico), pdf/pdf-cmyk, zip and video need a real
   // browser engine (jsdom has no layout), so they're produced by the web shell
-  // or the Tauri-bundled CLI (which ships a WebView) — a deliberate decision, not
+  // or the Tauri-bundled CLI (which ships a WebView) - a deliberate decision, not
   // a TODO: the node CLI stays dependency-light rather than bundling Chromium.
 /**
  * The tool's OWN root `<svg>`, or null when the tool draws in HTML.
  *
  * The vector formats below (svg / emf / eps / dxf) are CLI-native only for tools whose
- * template IS an `<svg>` — a browser-free vector path with no layout engine. The old
+ * template IS an `<svg>` - a browser-free vector path with no layout engine. The old
  * test for that was `node.querySelector('svg')`, which finds ANY descendant, and that
  * is wrong now that an HTML-layout tool can contain one: Design's vector path
  * boxes emit an inline `<svg><path>` per shape, so a poster with one pen shape used to
  * export as that ONE shape, with the artboard, the background and every other box
- * silently dropped — a plausible-looking wrong file, which is worse than a refusal.
+ * silently dropped - a plausible-looking wrong file, which is worse than a refusal.
  *
  * So: descend only through wrappers that have exactly one drawable child (scripts and
- * styles don't count — several native-svg tools ship a template script beside their
+ * styles don't count - several native-svg tools ship a template script beside their
  * `<svg>`). A container with two drawable children is a LAYOUT, not a wrapper, and the
  * answer is null → the caller raises "needs a browser engine", which is the truth.
  */
@@ -601,7 +601,7 @@ function rootSvgOf(node: Element | null): Element | null {
         return new Blob([opts.dataText], { type: opts.dataMime ?? 'text/plain' });
       }
       if (format === 'html') {
-        // Strip any template <script> (editor-runtime helpers — e.g. a canvas
+        // Strip any template <script> (editor-runtime helpers - e.g. a canvas
         // auto-resize hook) before serialising: the exported markup is static, and
         // the web shell's HTML export (renderStaticHtml) does the same. Clone so the
         // live node is left untouched.
@@ -646,7 +646,7 @@ function rootSvgOf(node: Element | null): Element | null {
         const xml = injectSvgMeta(raw, opts.meta); // embed authorship provenance
         const full = '<?xml version="1.0" standalone="no"?>\n' + xml;
         if (format === 'svgz') {
-          // SVGZ is literally gzip(SVG) — same provenance-bearing markup, ~60-70%
+          // SVGZ is literally gzip(SVG) - same provenance-bearing markup, ~60-70%
           // smaller. gunzip on read recovers the identical bytes.
           const gz = gzip(new TextEncoder().encode(full));
           return new Blob([gz as BlobPart], { type: 'image/svg+xml' });
@@ -654,7 +654,7 @@ function rootSvgOf(node: Element | null): Element | null {
         return new Blob([full], { type: 'image/svg+xml' });
       }
       if (format === 'emf') {
-        // EMF is pure bytes built from SVG primitives — no rasteriser needed, so
+        // EMF is pure bytes built from SVG primitives - no rasteriser needed, so
         // it joins svg as a CLI-native format for native-<svg> tools. Live <text>
         // is outlined in the walk: host.text (createNodeTextAPI above) shapes any
         // run whose family resolves to an sfnt on disk (e.g. the platform SUSE
@@ -666,7 +666,7 @@ function rootSvgOf(node: Element | null): Element | null {
         return new Blob([bytes as BlobPart], { type: 'image/emf' });
       }
       if (format === 'eps' || format === 'eps-cmyk') {
-        // EPS is vector PostScript built from the same SVG IR as EMF — text is
+        // EPS is vector PostScript built from the same SVG IR as EMF - text is
         // outlined upstream (svgDomToIr shapes live <text> via host.text; an
         // unresolvable family throws), so the emitter writes no fonts. eps-cmyk
         // is naive DeviceCMYK: no embedded output intent (same as the web shell).
@@ -690,7 +690,7 @@ function rootSvgOf(node: Element | null): Element | null {
         return new Blob([text], { type: 'application/postscript' });
       }
       if (format === 'dxf') {
-        // DXF is the same SVG-IR path as EMF/EPS — a fourth sink on svgDomToIr, so a
+        // DXF is the same SVG-IR path as EMF/EPS - a fourth sink on svgDomToIr, so a
         // native-<svg> tool exports vector CAD DXF browser-free (no 150MB Chromium for
         // what is fundamentally text). Text is outlined upstream (host.text present).
         const svg = rootSvgOf(node);
@@ -700,9 +700,9 @@ function rootSvgOf(node: Element | null): Element | null {
         return new Blob([text], { type: 'image/vnd.dxf' });
       }
       if (format === 'wmf') {
-        // WMF is the 16-bit ancestor of EMF — a fifth sink on the SAME svgDomToIr
+        // WMF is the 16-bit ancestor of EMF - a fifth sink on the SAME svgDomToIr
         // vector path, wired identically. Text is outlined upstream (host.text
-        // present; an unresolvable family throws — the text-as-paths guard). The
+        // present; an unresolvable family throws - the text-as-paths guard). The
         // metadata flag is accepted for call-site symmetry but is a no-op: WMF has
         // no comment record to carry a source URL.
         const svg = rootSvgOf(node);
@@ -718,7 +718,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // split rather than in raster.ts's Tier B.
         //
         // Two refusals, in order, both loud (their wording deliberately avoids run.ts's
-        // "fall back to HTML" signature — a pro-format request must never quietly
+        // "fall back to HTML" signature - a pro-format request must never quietly
         // become a .html file):
         //   1. no root <svg> → this tool needs layout, which jsdom cannot do;
         //   2. no `hdr=` → the raster is 8-bit sRGB and float would be padding.
@@ -748,7 +748,7 @@ function rootSvgOf(node: Element | null): Element | null {
       }
       if (format === 'bmp') {
         // BMP joins exr/hdr as a browser-free raster: the engine's own encoder over a
-        // resvg raster of THIS tool's SVG (no Chromium). Uncompressed Windows Bitmap —
+        // resvg raster of THIS tool's SVG (no Chromium). Uncompressed Windows Bitmap - 
         // the escape hatch for a legacy/embedded consumer that can't read a PNG. The
         // Lolly pixel Imprint is embedded by default (BMP has no metadata box for a
         // C2PA manifest, so the in-pixel mark is its only provenance); --imprint=0
@@ -787,17 +787,17 @@ function rootSvgOf(node: Element | null): Element | null {
     },
     // The pixel Imprint / durable mark are a raster+canvas enhancement; the lean
     // headless CLI has no rasteriser, so it returns the bytes unchanged (progressive
-    // enhancement, per the host.export.imprint contract). The C2PA credential — the
-    // portable mark — is still applied by host.c2pa.sign either way.
+    // enhancement, per the host.export.imprint contract). The C2PA credential - the
+    // portable mark - is still applied by host.c2pa.sign either way.
     async imprint(bytes: Uint8Array): Promise<Uint8Array> { return bytes; },
   };
 
-  // Page capture — navigate a URL in the scoped Chromium and read back its pixels. The
+  // Page capture - navigate a URL in the scoped Chromium and read back its pixels. The
   // CLI ships the same browsers.ts as the TUI, so this is now real (not a stub): a tool
   // that calls host.capture.page in a hook works when a browser is installed, and gets a
   // clear, actionable BrowserError (`lolly install-browser`) when it isn't. Mirrors the
   // TUI bridge. (url-shot's EXPORT is routed straight to captureUrl in run.ts, bypassing
-  // this — but this fulfils the 'capture' capability for the hook + non-CLI callers.)
+  // this - but this fulfils the 'capture' capability for the hook + non-CLI callers.)
   host.capture = {
     async page(spec) {
       const { bytes, mime } = await captureUrl(
@@ -818,11 +818,11 @@ function rootSvgOf(node: Element | null): Element | null {
   };
 
   // PDF metadata inspect + strip. Unlike raster/PDF *rendering* (which needs a
-  // browser engine), metadata surgery is pure pdf-lib, which runs fine in node —
+  // browser engine), metadata surgery is pure pdf-lib, which runs fine in node - 
   // so the lean CLI can clean PDFs too.
   host.pdf = createPdfAPI();
 
-  // host.c2pa.sign (v1.85; widened v1.104) — freshly sign a manifest into finished
+  // host.c2pa.sign (v1.85; widened v1.104) - freshly sign a manifest into finished
   // bytes. The engine's embedC2pa is DOM-free, so the lean CLI signs exactly like the
   // web shell: the any-media authorship path (author/©/licence over an existing file,
   // nested manifests preserved as ingredients) and the redact derivative path. Ephemeral
@@ -871,12 +871,12 @@ function rootSvgOf(node: Element | null): Element | null {
 
   // PPTX deck inspect + rebrand. The web impl already isolates its two host
   // dependencies (fflate zip codec, injectable XML parser), so the CLI reuses
-  // it wholesale — jsdom's DOMParser stands in for the browser's.
+  // it wholesale - jsdom's DOMParser stands in for the browser's.
   host.pptx = createPptxAPI({ parseXml: (xml) => new w.DOMParser().parseFromString(xml, 'application/xml') });
 
-  // Compose — render another tool to an embeddable asset (tool composition).
+  // Compose - render another tool to an embeddable asset (tool composition).
   // The lean node CLI has no rasteriser, so it composes only children that export
-  // to svg/data (same stance as host.export above) — a raster child throws and the
+  // to svg/data (same stance as host.export above) - a raster child throws and the
   // runtime omits that slot gracefully. Result is a data: URL (jsdom has no
   // URL.createObjectURL). Mirrors run.js's render path (hydrate into a node →
   // host.export.render), with watermark/provenance suppressed (intermediate asset).
@@ -899,7 +899,7 @@ function rootSvgOf(node: Element | null): Element | null {
       // children still rely on their var() fallbacks (accepted class).
       await applyBrandVars(el, host);
       const fmt = format ?? childTool.manifest.render.formats[0]!;
-      // Honour requested dimensions — host.export (CLI svg) parses a unit-qualified
+      // Honour requested dimensions - host.export (CLI svg) parses a unit-qualified
       // width/height via parseDimension; px passes through as a number.
       const u = unit || 'px';
       const qual = (v: number | null | undefined): string | number | undefined => (typeof v === 'number' && v > 0 ? (u !== 'px' ? `${v}${u}` : v) : undefined);
@@ -915,7 +915,7 @@ function rootSvgOf(node: Element | null): Element | null {
     },
 
     // Render a pasted/stored Lolly tool URL to an AssetRef whose id is the
-    // canonical embed URL — the same contract as the web bridge, so a tool-sourced
+    // canonical embed URL - the same contract as the web bridge, so a tool-sourced
     // asset re-resolves in CLI/headless runs too (svg works; a raster child throws
     // and the caller leaves the slot empty, matching host.compose.render's stance).
     async renderUrl(url, opts = {}) {
@@ -924,7 +924,7 @@ function rootSvgOf(node: Element | null): Element | null {
       let childTool!: Awaited<ReturnType<typeof loadTool>>;
       try { childTool = await loadTool(parsed.toolId, composeFetchFile); } catch { return null; }
       // A pasted link may carry packed state (`?z=…`); expand before parsing. The
-      // embed id below is minted from the EXPANDED query too — the packed query's
+      // embed id below is minted from the EXPANDED query too - the packed query's
       // only param is the reserved `z`, which gets stripped, so a packed link would
       // otherwise render (and persist) as all defaults. Same as the web bridge.
       const query = await expandQuery(parsed.query);
@@ -953,7 +953,7 @@ function rootSvgOf(node: Element | null): Element | null {
       const id = buildEmbedUrl({ toolId: parsed.toolId, format, query: q.toString() });
       // No re-parseable identity (too long) → don't persist a dead slot: a
       // `compose:<toolId>` id can't re-resolve on load (same stance as the web
-      // bridge). meta.toolUrl carries the canonical id — it is what drives the
+      // bridge). meta.toolUrl carries the canonical id - it is what drives the
       // live-edit UI and what baking records as provenance (meta.bakedFrom).
       if (!id) return null;
       return {
@@ -976,7 +976,7 @@ const BRAND_VAR_SLOTS = ['primary', 'on-primary', 'secondary', 'surface', 'text'
 /**
  * Resolve the active brand's semantic colour slots (`color.semantic.*`) via
  * host.tokens and set them as CSS custom properties (`--brand-primary`,
- * `--brand-surface`, …) on the element the tool template hydrates into — the
+ * `--brand-surface`, …) on the element the tool template hydrates into - the
  * CLI half of the web shell's applyBrandVars, so a semantic-var template
  * renders identically via web, URL mode, and CLI. TokenSet.resolve takes the
  * alias form ({path}) and bare dotted paths under the same rule, so one call
@@ -989,7 +989,7 @@ export async function applyBrandVars(el: HTMLElement, host: HostV1): Promise<voi
   for (const slot of BRAND_VAR_SLOTS) {
     let value: unknown;
     try { value = await host.tokens.resolve(`{color.semantic.${slot}}`); } catch { continue; }
-    // A string passes through as resolved (oklch()/hex are both valid CSS) —
+    // A string passes through as resolved (oklch()/hex are both valid CSS) - 
     // unless it is alias residue: a `{path}` that never resolved is a missing
     // slot, not a colour (contract §3), so it sets nothing. Any structured
     // DTCG colour form is normalised to hex by the engine.
@@ -1056,8 +1056,8 @@ function mimeFor(format: string): string {
 /**
  * The brand palette as a CMYK substitution map, for the CLI's eps-cmyk sink.
  *
- * Built through the ENGINE's `buildCmykPaletteMap` — the same one the web
- * shell's PDF/TIFF/EPS sinks use — so a declared finish resolves to
+ * Built through the ENGINE's `buildCmykPaletteMap` - the same one the web
+ * shell's PDF/TIFF/EPS sinks use - so a declared finish resolves to
  * `FINISH_MASK_CMYK` in the terminal exactly as it does in the browser. Before
  * this existed the CLI passed no palette at all, so the finish fix stopped at
  * the shell boundary and `lolly wordmark --export=eps-cmyk` still converted a

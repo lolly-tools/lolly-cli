@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * "What can THIS installation actually do?" — the capability report an agent reads
+ * "What can THIS installation actually do?" - the capability report an agent reads
  * before it tries something, instead of discovering it from an exit 3.
  *
  * Exit 3 (`UNAVAILABLE_HERE`) is the contract's retry-on-another-runner code, and it is

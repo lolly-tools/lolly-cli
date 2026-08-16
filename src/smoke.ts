@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * `lolly smoke` — the catalog-wide render gate.
+ * `lolly smoke` - the catalog-wide render gate.
  *
  * Renders EVERY tool in the active profile's catalog at manifest defaults, each to its
- * first Node-native format (NODE_FORMATS — DOM-free, browser-free), and exits non-zero
+ * first Node-native format (NODE_FORMATS - DOM-free, browser-free), and exits non-zero
  * if any render fails. assertRenderOk is already wired inside the CLI write path, so a
- * hooks.js regression that would ship a blank tool surfaces here as that tool's ✗ —
+ * hooks.js regression that would ship a blank tool surfaces here as that tool's ✗ - 
  * this is the CI job that keeps the gallery from ever shipping a tool that renders
  * blank. Budget rules: renders run sequentially, never launch a browser, never
  * download one.
@@ -20,14 +20,14 @@
  *
  * Three outcomes, not two. A tool whose first Node-native format is svg but whose
  * template is an HTML layout has no browser-free vector path, and smoke may not launch
- * the tier that does — that lands in its OWN `~` bucket (rendered as html, hooks
+ * the tier that does - that lands in its OWN `~` bucket (rendered as html, hooks
  * checked), never as a ✓ for the format it could not produce. It does not fail the gate,
  * because it is a statement about smoke's budget, not about the tool.
  *
  * Tools that legitimately cannot render headlessly are SKIPPED with a reason, never
- * failed: transform tools (hooks.exportFile — file in → bytes out, nothing to render
+ * failed: transform tools (hooks.exportFile - file in → bytes out, nothing to render
  * at defaults) and tools gated on a live-capture capability (camera/microphone/screen/
- * capture — browser-only by definition). Everything else is strict: a hook error is a
+ * capture - browser-only by definition). Everything else is strict: a hook error is a
  * real failure.
  */
 
@@ -43,7 +43,7 @@ import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 
 const REPO_ROOT = repoRoot();
 
-/** Capabilities that only a live browser/device session can fulfil — the CLI host has
+/** Capabilities that only a live browser/device session can fulfil - the CLI host has
  *  no camera, mic, screen, or page-capture Chromium (smoke never launches a browser). */
 const LIVE_CAPTURE_CAPS = ['capture', 'camera', 'microphone', 'screen'];
 
@@ -58,14 +58,14 @@ export interface SmokeManifest {
 
 /**
  * The first declared format smoke can render without a browser (declared spelling
- * preserved — some tools say 'jpeg', none respell NODE_FORMATS, but stay tolerant).
+ * preserved - some tools say 'jpeg', none respell NODE_FORMATS, but stay tolerant).
  * null → no Node-native format at all → the caller uses the inline html fallback.
  */
 export function pickSmokeFormat(formats: string[]): string | null {
   return formats.find(f => NODE_FORMATS.includes(f.toLowerCase())) ?? null;
 }
 
-/** Why a tool is skipped rather than rendered — or null when it must render (strict). */
+/** Why a tool is skipped rather than rendered - or null when it must render (strict). */
 export function skipReason(manifest: SmokeManifest, forcedFormat?: string): string | null {
   if (manifest.hooks && 'exportFile' in manifest.hooks) {
     return 'transform tool (file in → bytes out; nothing to render at defaults)';
@@ -79,11 +79,11 @@ export function skipReason(manifest: SmokeManifest, forcedFormat?: string): stri
 }
 
 interface SmokeArgs {
-  /** --only=id,id — smoke just these catalog tool ids. */
+  /** --only=id,id - smoke just these catalog tool ids. */
   only?: string;
-  /** --format=svg — force one Node-native format for every tool that declares it. */
+  /** --format=svg - force one Node-native format for every tool that declares it. */
   format?: string;
-  /** Row/summary sink (stdout by default) — injectable so tests don't garble TAP. */
+  /** Row/summary sink (stdout by default) - injectable so tests don't garble TAP. */
   out?: (line: string) => void;
   /** --json: the §5.2 envelope on stdout; the progress table moves to stderr. */
   json?: boolean;
@@ -194,13 +194,13 @@ export async function smokeCli({ only, format, out, json = false }: SmokeArgs = 
       capture.restore();
       // FORMAT_UNAVAILABLE: an HTML-layout tool whose first Node-native format is svg. It
       // has no browser-free vector path, and smoke's budget rule forbids launching the
-      // render tier that does — so this says nothing about whether the tool renders.
+      // render tier that does - so this says nothing about whether the tool renders.
       //
       // What it must NOT do is what it did before: the old code accepted runToolCli's
       // silent svg→html substitution and printed `✓ filter-halftone svg->html 761 B`, so
       // a fallback scored identically to a real vector render and the gate was worthless
       // for exactly the tools it most needed to cover. Now the HTML render is smoke's own
-      // deliberate choice (renderHtmlHeadless — still load → hydrate → hooks →
+      // deliberate choice (renderHtmlHeadless - still load → hydrate → hooks →
       // assertRenderOk, which is what smoke is for) and it is reported in its OWN bucket,
       // never as a ✓. A hook failure inside that render is still a hard ✗ below.
       if ((e as { code?: string }).code === 'FORMAT_UNAVAILABLE') {
@@ -252,8 +252,8 @@ export async function smokeCli({ only, format, out, json = false }: SmokeArgs = 
 /**
  * The html fallback for tools with NO Node-native format (their formats start pptx/
  * raster/video, and they don't declare html, so runToolCli's declared-format check
- * refuses it). Same primitives as run.ts — jsdom + the CLI bridge + brand vars +
- * hydrate + export — ending in the same assertRenderOk, so a hook failure is still ✗.
+ * refuses it). Same primitives as run.ts - jsdom + the CLI bridge + brand vars +
+ * hydrate + export - ending in the same assertRenderOk, so a hook failure is still ✗.
  */
 async function renderHtmlHeadless(toolId: string, outputPath: string): Promise<void> {
   const jsdom = await import('jsdom');
@@ -268,7 +268,7 @@ async function renderHtmlHeadless(toolId: string, outputPath: string): Promise<v
   const fetchFile = async (path: string): Promise<string> => readFile(join(REPO_ROOT, 'tools', path), 'utf8');
   const tool = await loadTool(toolId, fetchFile);
   const { createCliBridge, applyBrandVars } = await import('./bridge.ts');
-  // Same per-tool host.net gate as run.ts — a network-capable tool's onInit fetch
+  // Same per-tool host.net gate as run.ts - a network-capable tool's onInit fetch
   // must pass/fail here exactly as it would on a real CLI render.
   const host = await createCliBridge({ dom, profile: {}, networkAllowlist: tool.manifest.network?.allowlist });
   const { values } = parseUrlState('', tool.manifest);

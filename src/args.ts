@@ -10,8 +10,8 @@
  * occurrence EXCEPT for the documented repeatable set, which accumulates.
  *
  * Two things that are new at GA and cannot be added later without breaking someone:
- *   • `--` — without it a longtext value beginning with `--` can never be passed.
- *   • the bare-value-flag refusal — `--output` (no `=`) parsed to "1" and wrote a file
+ *   • `--` - without it a longtext value beginning with `--` can never be passed.
+ *   • the bare-value-flag refusal - `--output` (no `=`) parsed to "1" and wrote a file
  *     literally named `1`. Every value-taking flag now says so instead.
  */
 
@@ -47,7 +47,7 @@ export const VALUE_FLAGS = new Set([
   // `--profile` parsed to "1" and handed the CMYK export a press condition literally
   // named "1", while `--press-profile` alone exited 2. Same flag, opposite answers.
   'press-profile', 'profile', 'user-profile', 'link-password', 'text', 'trust-anchor',
-  // NOTE: no bare `out`. `preflight --out=` was removed before GA (§1.4) — one shell,
+  // NOTE: no bare `out`. `preflight --out=` was removed before GA (§1.4) - one shell,
   // one spelling for "where output goes" per shape: `--output` for a single file,
   // `--out-dir` for a directory of them. Leaving `out` here also made a bare `--out`
   // a usage error on EVERY command, so a tool declaring a boolean input `out` could

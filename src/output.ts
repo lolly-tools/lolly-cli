@@ -4,12 +4,12 @@
  *
  * TWO rules, both frozen at GA:
  *
- *   1. stdout carries the PAYLOAD and nothing else — rendered bytes, the JSON
+ *   1. stdout carries the PAYLOAD and nothing else - rendered bytes, the JSON
  *      envelope, or the human report for a report-shaped command. Every diagnostic
  *      goes to stderr, without exception. `note()`/`warn()` are how the rest of the
  *      shell says anything, so the rule is enforceable in one place.
  *   2. A write to stdout must be FLUSHED before the process exits. `process.exit()`
- *      after a large `write()` on a pipe discards the unflushed remainder — that is
+ *      after a large `write()` on a pipe discards the unflushed remainder - that is
  *      how `lolly … | wc -c` reported 65536 bytes for a 638897-byte PNG. `writeOut`
  *      awaits the write callback and NOTHING in this shell calls `exit()` after it.
  *
@@ -57,7 +57,7 @@ export function note(message: string): void {
  * A warning: something the caller probably did not intend, which did not stop the run.
  *
  * Printed to stderr (unless --quiet) AND recorded, so `--strict` can turn the whole run
- * into a failure afterwards — the message is still shown first, because a strict run
+ * into a failure afterwards - the message is still shown first, because a strict run
  * that only prints an exit code teaches nobody anything.
  */
 export function warn(code: string, message: string, kind: 'usage' | 'gate' = 'usage'): void {
@@ -99,7 +99,7 @@ export function writeOut(data: string | Uint8Array): Promise<void> {
  *
  * `host.log` already writes to stderr at every level, but a tool's `hooks.js` runs in
  * the Node realm (the runtime injects the host bridge into a closure; it is not a
- * sandbox), so a hook that calls `console.log` directly writes to the real stdout —
+ * sandbox), so a hook that calls `console.log` directly writes to the real stdout - 
  * which, on `lolly … --export=png > out.png`, lands INSIDE the PNG. No shipped tool
  * does it today; tools ship as data from another repository, so "no shipped tool does
  * it" is not a property this shell can rely on.

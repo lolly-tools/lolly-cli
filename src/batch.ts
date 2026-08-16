@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * CLI batch — "the CLI way" of many renders from one file. A batch is a CSV/TSV whose
+ * CLI batch - "the CLI way" of many renders from one file. A batch is a CSV/TSV whose
  * header names a `toolId` column, optional per-row output columns
  * (format/width/height/unit/dpi/filename), and one column per tool input; each data
  * row is rendered by the SAME single-render primitive the rest of the CLI uses
  * (runToolCli → URL mode), writing a sequence-numbered file into an output DIRECTORY.
  *
  * A directory (not a zip) is deliberate: the lean node CLI has no zip dependency, and
- * a directory composes with the user's own `zip`/`tar`. (The TUI's batch packs a zip —
+ * a directory composes with the user's own `zip`/`tar`. (The TUI's batch packs a zip - 
  * same rows, a different idiomatic output per surface.)
  */
 import { readFile, mkdir } from 'node:fs/promises';
@@ -38,7 +38,7 @@ export async function batchTemplateCli(toolIds: string[], opts: { json?: boolean
   }
   const { csv, shadowedInputs } = batchCsvTemplateWithNotes(tools);
   if (shadowedInputs.length) {
-    // A batch row has no `--input.<id>=` namespace — the header IS the namespace — so an
+    // A batch row has no `--input.<id>=` namespace - the header IS the namespace - so an
     // input whose id is a reserved output column simply cannot be set from a batch. Say
     // it here rather than emit two columns with the same name and let the second quietly
     // win (a grid whose two `width` cells read 600 and 300 rendered at 300).
@@ -130,7 +130,7 @@ export async function runBatchCli(csvPath: string, opts: { outDir: string; keepG
   };
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    // Per-row output settings ride in `params` as reserved keys — parseUrlState reads
+    // Per-row output settings ride in `params` as reserved keys - parseUrlState reads
     // them exactly as it would from a URL (`?width=…`), so there's one contract.
     const params = { ...row.params };
     if (row.width) params.width = String(row.width);

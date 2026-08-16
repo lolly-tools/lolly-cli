@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * `lolly validate <file> [--json] [--deep] [--trust-anchor=<root.pem>]` —
+ * `lolly validate <file> [--json] [--deep] [--trust-anchor=<root.pem>]` - 
  * on-device Content Credentials check for any stampable container (pdf,
  * png/apng, jpg, gif, svg, tiff, webp, mp4, webm).
  *
  * `--deep` additionally runs the web shell's neural pixel-watermark scan
  * (Adobe TrustMark / Meta Content Seal, incl. Lolly's own ?durable=1 mark)
- * by driving the built dist in the scoped Chromium — the same on-device
+ * by driving the built dist in the scoped Chromium - the same on-device
  * decode the /valid view runs. Needs the Tier-B setup (`lolly
  * install-browser` + `npm run build:web`); everything else in this file
  * stays DOM-free and browser-free.
  *
  * The same engine verifier that backs the web shell's /valid view
  * (engine/src/c2pa-verify.js): re-checks the credential a Lolly export embeds
- * — hashed URIs, COSE claim signature, certificate window, hard binding — and
+ * - hashed URIs, COSE claim signature, certificate window, hard binding - and
  * prints a report whose codes mirror c2patool /
  * verify.contentauthenticity.org, headlined by the question users actually
  * ask: was this genuinely made with Lolly, by whom, and where. No jsdom, no
@@ -28,7 +28,7 @@
  * the default set is the Lolly CA root + the vendored C2PA known-certificate
  * list + whatever `--trust-anchor` / `$LOLLY_TRUST_ANCHOR` pins. The Lolly root
  * used to be excluded here, so a Lolly-CA-signed export that read "Verified" on
- * the web /valid view read plain "Credential intact" in the terminal — one word
+ * the web /valid view read plain "Credential intact" in the terminal - one word
  * meaning two things depending on which surface asked. `--no-default-anchors`
  * drops BOTH built-in sets for a bare-trust check: only the caller's pinned
  * roots count, and with none pinned the anchor set is empty, under which every
@@ -36,7 +36,7 @@
  * verdict, in the same words the TUI's verdict panel uses, because "verified"
  * is only meaningful beside "verified by what".
  *
- * EXIT CODES (plans/73-cli-ga-contract.md §6b) — derived from the engine's shared verdict
+ * EXIT CODES (plans/73-cli-ga-contract.md §6b) - derived from the engine's shared verdict
  * ladder (resolveVerdict), NOT from the raw report.state this file used to branch on:
  *
  *   valid / expired          → 0   the file matches what was signed
@@ -92,7 +92,7 @@ export interface ValidateOpts {
   /** --strict: an expired credential becomes a refusal. */
   strict?: boolean;
   /**
-   * --metadata: add the file report (contract §6b) — embedded metadata, PDF structure,
+   * --metadata: add the file report (contract §6b) - embedded metadata, PDF structure,
    * and the failed-redaction pass. Implemented by @lolly-tools/node-shell/inspect, the
    * one implementation the TUI and MCP consume too.
    */
@@ -157,16 +157,16 @@ export async function validateFile(
 ): Promise<ValidateFileOutcome> {
   // --trust-anchor=<root.pem> is repeatable and comes from the REAL parser now (this
   // used to re-scan process.argv, because the old flag parser kept only the last
-  // occurrence — a second parser is a second set of rules waiting to disagree).
+  // occurrence - a second parser is a second set of rules waiting to disagree).
   // $LOLLY_TRUST_ANCHOR adds `path.delimiter`-separated paths, honoured by the CLI and
   // the TUI alike (contract §1.5/§4.7): flag first, then environment. The splitting and
   // `~` rules come from @lolly-tools/node-shell/trust-anchors so the two shells cannot
-  // disagree — this file used to hard-code `':'`, which splits a Windows `C:\…\root.pem`
+  // disagree - this file used to hard-code `':'`, which splits a Windows `C:\…\root.pem`
   // at the drive letter and then reports two unreadable anchors.
   const fromEnv = splitAnchorList(process.env.LOLLY_TRUST_ANCHOR);
   const anchorPaths = [...(trustAnchors ?? []), ...fromEnv];
   // The Lolly CA root + the vendored C2PA trust list (Google/Gemini, camera makers, …)
-  // plus any --trust-anchor=<root.pem> the caller pins — the SAME set the web /valid
+  // plus any --trust-anchor=<root.pem> the caller pins - the SAME set the web /valid
   // view uses, decided in contract §12 O1. `--no-default-anchors` drops both built-in
   // sets, leaving only what was pinned (possibly nothing, which is the bare-trust
   // check: every signer reads untrusted by construction).
@@ -182,7 +182,7 @@ export async function validateFile(
     vendored: defaultAnchors ? c2paTrustAnchors().length : 0,
     pinned: anchorPaths,
   };
-  // A path that cannot be read is exit 2 (USAGE), never 1 — the whole point of the
+  // A path that cannot be read is exit 2 (USAGE), never 1 - the whole point of the
   // taxonomy is that a typo'd path and a forged file are different answers.
   let bytes: Uint8Array;
   try {
@@ -206,12 +206,12 @@ export async function validateFile(
   }
   const report = await verifyC2pa(bytes, { trustAnchors: anchors });
 
-  // --metadata: the file report (contract §6b) — "what else is in this file", on top of
+  // --metadata: the file report (contract §6b) - "what else is in this file", on top of
   // "is the credential intact". One implementation, in @lolly-tools/node-shell/inspect,
   // so this command, the TUI and MCP cannot drift the way the verdict ladder did.
   // The already-verified `report` is NOT passed in: the credential is rendered above by
   // this file's own richer renderer, and printing a second verdict line would read as a
-  // second opinion. Never throws — a hostile file yields fewer findings and an `errors`
+  // second opinion. Never throws - a hostile file yields fewer findings and an `errors`
   // list, which the renderer prints as "this report is incomplete".
   let inspection: Inspection | null = null;
   if (metadata) {
@@ -220,9 +220,9 @@ export async function validateFile(
   }
 
   // --deep: the neural pixel-watermark scan (Adobe TrustMark / Meta Content Seal,
-  // incl. Lolly's ?durable=1 mark) — the /valid view's own decode, driven headlessly
+  // incl. Lolly's ?durable=1 mark) - the /valid view's own decode, driven headlessly
   // via the Tier-B browser. Advisory: it never changes the exit code (a durable mark
-  // is a soft binding, and its ABSENCE is never proof — per the detectors' policy).
+  // is a soft binding, and its ABSENCE is never proof - per the detectors' policy).
   let deepScan: DeepScanResult | null = null;
   let deepErr: string | null = null;
   if (deep) {
@@ -247,13 +247,13 @@ export async function validateFile(
   if (json) {
     // The §5.2 result shape, aligned with the MCP twin (services/mcp/src/tools.ts) so
     // one question has one answer shape across both machine surfaces:
-    //   verdict  — the legacy slug ('made-with-lolly', 'no-credential', …)
-    //   resolved — the engine's semantic verdict (state + tone + the flags behind it)
-    //   report   — the full verifier output, unchanged
-    //   metadata — the file report, when --metadata ran; null when it did not, and
+    //   verdict - the legacy slug ('made-with-lolly', 'no-credential', …)
+    //   resolved - the engine's semantic verdict (state + tone + the flags behind it)
+    //   report - the full verifier output, unchanged
+    //   metadata - the file report, when --metadata ran; null when it did not, and
     //              never a fabricated empty object, because "not examined" and "nothing
     //              found" are different answers.
-    //   anchors  — WHICH trust anchors produced `resolved.trusted` (contract §12 O1).
+    //   anchors - WHICH trust anchors produced `resolved.trusted` (contract §12 O1).
     //              Additive key under schemaVersion 1; consumers ignore what they
     //              do not know.
     const resolved = resolvedState(report);
@@ -276,7 +276,7 @@ export async function validateFile(
     // (verdict-report.ts) so this surface and the TUI can never again print
     // different words for the same verdict. This file keeps ONLY the ANSI skin.
     // Two CLI quirks survive the move and are carried by the shared renderer:
-    //  • partsMadeWithLolly IS elevated to a headline here (elevateParts) —
+    //  • partsMadeWithLolly IS elevated to a headline here (elevateParts) - 
     //    resolveVerdict keeps it a flag, matching the web hero where parts is
     //    only a scorecard pip;
     //  • no separate "Verified" headline for a CA-trusted signer (the web /valid
@@ -321,14 +321,14 @@ export async function validateFile(
     }
     if (inspection) {
       const { renderInspection } = await import('@lolly-tools/node-shell/inspect-render');
-      // heading:false — this file already printed the path headline for these bytes.
+      // heading:false - this file already printed the path headline for these bytes.
       process.stdout.write(renderInspection(inspection, { color: tty, heading: false }));
     }
   }
 
   // `--require=none` is the inspection mode: the file was readable, so the run
   // succeeded, whatever the credential says. `--require=credential` (the default)
-  // keeps gate semantics — the verdict IS the exit code.
+  // keeps gate semantics - the verdict IS the exit code.
   //
   // --strict + --metadata: a share risk the inspection FOUND (text present but not
   // visible, a GPS fix, undeclared bytes appended past the container) is a warning in
@@ -339,7 +339,7 @@ export async function validateFile(
   return { exit, record: null };
 }
 
-/** The engine's shared verdict ladder — one ladder for the CLI, the TUI and /valid. */
+/** The engine's shared verdict ladder - one ladder for the CLI, the TUI and /valid. */
 function resolvedState(report: Parameters<typeof resolveVerdict>[0]): ReturnType<typeof resolveVerdict> {
   return resolveVerdict(report);
 }
@@ -357,7 +357,7 @@ export function verdictExit(state: string, strict = false): number {
     case 'none': return EXIT.NOT_FOUND;
     case 'invalid': case 'likelyLolly': return EXIT.REFUSED;
     case 'expired': return strict ? EXIT.REFUSED : EXIT.OK;
-    // 'valid', 'trusted', 'lolly', 'delivered' — the file matches what was signed.
+    // 'valid', 'trusted', 'lolly', 'delivered' - the file matches what was signed.
     default: return EXIT.OK;
   }
 }

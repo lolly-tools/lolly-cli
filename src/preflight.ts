@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * `lolly preflight <tool-id|url> [--flags…]` — count and check an export
+ * `lolly preflight <tool-id|url> [--flags…]` - count and check an export
  * without rendering it.
  *
  * ## What this is
@@ -25,11 +25,11 @@
  *
  * ## Money appears ONLY with `--rate-card`, and only from the card
  *
- * With no `--rate-card` this command counts and never mentions money — unchanged.
+ * With no `--rate-card` this command counts and never mentions money - unchanged.
  * WITH `--rate-card=<file.json>` and a costable job it multiplies the card's rates
  * by the quantities it COUNTED (`computeCost`, in integer minor units) and prints
  * the arithmetic: one row per multiplication, the minimum charge as a visible row,
- * a coverage line, and a scalar total ONLY when every counted line is priced —
+ * a coverage line, and a scalar total ONLY when every counted line is priced - 
  * always rendered WITH its source inline, never a bare figure. It NEVER originates,
  * defaults, infers or approximates a price. A ceiling count stays "up to" all the
  * way to the total. `--rate-card` is a device-local FILE flag, never a URL param:
@@ -52,26 +52,26 @@
  *
  * ## Streams and exit codes
  *
- *   stdout — the report, and ONLY the report. In `--json`, exactly one JSON
- *            document ON EVERY PATH — the shared envelope (§5.2), with the
- *            report as `result` — so `lolly preflight qr-code --json | jq
+ *   stdout - the report, and ONLY the report. In `--json`, exactly one JSON
+ *            document ON EVERY PATH - the shared envelope (§5.2), with the
+ *            report as `result` - so `lolly preflight qr-code --json | jq
  *            .result.findings` works unconditionally. The exit-2 path emits the
  *            same envelope with `ok:false` and an `error` rather than nothing:
  *            a CI step doing `lolly preflight X --json > r.json` must get a
  *            machine-readable refusal, not a parse error, because a refusal is
  *            precisely what exit 2 exists to make legible.
- *   stderr — usage errors, refused flags, load failures, warnings. NEVER a
+ *   stderr - usage errors, refused flags, load failures, warnings. NEVER a
  *            finding: a finding is data and belongs in the artifact.
  *
- *   0 — preflight ran; no `error` findings.
- *   4 — REFUSED: preflight ran and a protective check said no. At least one
+ *   0 - preflight ran; no `error` findings.
+ *   4 - REFUSED: preflight ran and a protective check said no. At least one
  *       `error` finding (or, with `--strict`, a `warn`). It is 4 and not 1
  *       because §5.1 reserves 1 for "it ran and FAILED": preflight did not fail,
- *       it worked and reported a problem — the same event `validate` reports with
+ *       it worked and reported a problem - the same event `validate` reports with
  *       4. Two check commands must not return opposite codes for one class of
  *       finding, or a CI wrapper branching on `$?` sends a print error down the
  *       "lolly crashed, retry" path.
- *   2 — USAGE: preflight COULD NOT RUN (unknown tool, unloadable manifest, a
+ *   2 - USAGE: preflight COULD NOT RUN (unknown tool, unloadable manifest, a
  *       `zx=` link with no password, a refused flag). Exiting 0 when the check
  *       never happened is the one failure mode that makes a CI gate worthless.
  *
@@ -118,7 +118,7 @@ const paint = (code: string, s: string): string => (tty ? code + s + RESET : s);
  * Strip control characters before printing.
  *
  * The threat surface here is WIDER than `validate.ts`'s, not narrower. A spot
- * ink's `name`, and `FinishKind` (an OPEN union — an arbitrary printable string),
+ * ink's `name`, and `FinishKind` (an OPEN union - an arbitrary printable string),
  * come from a brand tokens JSON the user dropped through brand ingest, and both
  * land in a finding message. The tool id arrives from argv or from a pasted URL;
  * tool titles, input labels and echoed input values are tool-pack or user data.
@@ -126,7 +126,7 @@ const paint = (code: string, s: string): string => (tty ? code + s + RESET : s);
  * Scrubbed AT THE PRINT BOUNDARY only, never in the data model: `--json` emits
  * the raw values through `JSON.stringify` (which escapes control characters by
  * construction), so scrubbing the model would make the two reports disagree about
- * the data — worse than the ANSI risk it removes. Colour is only ever emitted by
+ * the data - worse than the ANSI risk it removes. Colour is only ever emitted by
  * `paint()` over our own literals.
  */
 // The ONE terminal control-char scrub, shared with the verdict renderer and run.ts
@@ -137,7 +137,7 @@ const clean = cleanControlChars;
 /** This subcommand's own flags. Removed from the params before they are read as
  *  URL state, so they are never mistaken for tool inputs. `rate-card`/`run-length`/
  *  `use-expired-rates` are read off the RAW `flags` (never off the URL query), so a
- *  pasted link's `?rate-card=` can never bring money — a card is a device-local
+ *  pasted link's `?rate-card=` can never bring money - a card is a device-local
  *  file, and the flag names it locally. */
 const OWN_FLAGS = ['json', 'strict', 'rate-card', 'run-length', 'use-expired-rates'] as const;
 
@@ -146,12 +146,12 @@ const OWN_FLAGS = ['json', 'strict', 'rate-card', 'run-length', 'use-expired-rat
  *
  * `parseArgs` drops unknown flags on the floor. A silently-ignored
  * `--batch=rows.csv` would print a confident single-job report that the reader
- * takes for a 50-row answer — exactly the class of quiet-wrong-number this
+ * takes for a 50-row answer - exactly the class of quiet-wrong-number this
  * subcommand exists to prevent. Refusing costs two lines.
  */
 const REFUSED: Record<string, string> = {
   // `--rates` stays refused: the flag is `--rate-card`, never `--rate`/`--rates`
-  // (docs/cli.md's `--profile`/`--press-profile` collision — do not add a third).
+  // (docs/cli.md's `--profile`/`--press-profile` collision - do not add a third).
   rates: '--rates is not a flag. The rate card flag is --rate-card=<file.json>.',
   batch: 'batch preflight is not implemented yet. Run `lolly preflight <tool-id>` for a single job.',
   // Removed before GA rather than frozen. It was a THIRD spelling for "where output
@@ -181,12 +181,12 @@ export async function preflightCli(rest: string[], flags: Record<string, string>
     if (!(e instanceof UsageError)) {
       process.stderr.write('Nothing was checked. This is not a clean preflight.\n');
     }
-    // stdout still gets exactly one JSON document — now the shared envelope, whose
+    // stdout still gets exactly one JSON document - now the shared envelope, whose
     // `ok:false` + `error` say "this did not run" in the same shape every other
     // command uses. `error.kind` is the stable handle, so an error that ALREADY carries
     // one keeps it: an unknown tool reports `UNKNOWN_TOOL` here exactly as it does from
     // `describe` and `smoke`, rather than a subcommand-private `PREFLIGHT_LOAD_FAILED`
-    // that an agent would have to learn separately. The exit code stays 2 either way —
+    // that an agent would have to learn separately. The exit code stays 2 either way - 
     // "the check never happened" is the fact this subcommand exists to state.
     if (isOn(flags.json)) {
       const { emitError } = await import('./envelope.ts');
@@ -242,7 +242,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
     const urlParams = Object.fromEntries(new URLSearchParams(ref.query));
     params = { ...urlParams, ...flags };
     // URL mode's bare `export` is a PRESENCE flag ("auto-download on open"), not a
-    // format — the same coalescing the run path applies.
+    // format - the same coalescing the run path applies.
     if (params.export === '') delete params.export;
     if (ref.format && params.format === undefined && params.export === undefined) params.format = ref.format;
     toolId = ref.toolId;
@@ -250,7 +250,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   for (const f of OWN_FLAGS) delete params[f];
 
   // jsdom: `createRuntime` runs the tool's `onInit`, which may touch `document`.
-  // Nothing is rendered into it — this is the same setup the `--share` path uses.
+  // Nothing is rendered into it - this is the same setup the `--share` path uses.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>', {
     virtualConsole: quietVirtualConsole(jsdom),
@@ -271,7 +271,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   const caveats: Finding[] = [];
 
   // A reserved flag that shadows one of THIS tool's declared inputs never reaches the
-  // input — the same warning the render path prints (contract B7). Without it
+  // input - the same warning the render path prints (contract B7). Without it
   // `preflight chart-creator --width=333 --unit=mm` reported a clean 1080px job and the
   // render that followed was a different artefact, which is precisely the
   // silently-wrong-number class this subcommand exists to prevent.
@@ -314,7 +314,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   const query = await expandQuery(rawQuery);
   const state = parseUrlState(query, tool.manifest);
   const { values, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, cuts, hdr } = state;
-  // `--input.<id>=<value>` — the explicit input namespace (contract B7), applied here
+  // `--input.<id>=<value>` - the explicit input namespace (contract B7), applied here
   // exactly as `runToolCli` applies it, and for the same reason: preflighting a job the
   // render would not produce is worse than not preflighting at all. It is the permanent,
   // frozen escape hatch, so it has to work on the command that checks the escape hatch.
@@ -372,7 +372,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
     settings: {
       format,
       size: sizeFacts(width, height, unit, dpi, tool.manifest.render),
-      // Absent on the command line means the export applies none — an explicit
+      // Absent on the command line means the export applies none - an explicit
       // zero, not an unknown. (A batch row, which CARRIES none, is the case that
       // must report `{ known:false, why:'not-carried' }`; that is Phase 2's path.)
       bleed: { known: true, value: bleed ? parseDimension(bleed) : null },
@@ -384,7 +384,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
       password: Boolean(password),
       // The RESOLVED settings, not the raw params. Both marks are default-on for a CLI
       // render (contract §12 O2), so reporting an absent flag as `not-set` would have
-      // preflight describe a job the render would not produce — the one thing this
+      // preflight describe a job the render would not produce - the one thing this
       // command exists to prevent. `--no-provenance` resolves both to false.
       c2pa: { known: true, value: bare ? false : c2pa ? c2pa.on : c2paDefaultOn(tool.manifest) },
       imprint: { known: true, value: bare ? false : (imprint ?? imprintDefaultOn(tool.manifest)) && isImprintFormat(format) },
@@ -478,7 +478,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
 /**
  * Read + validate a `--rate-card=<file.json>`. Returns the parsed card + its content
  * digest, or a `refused` reason (unreadable, or one of `parseRateCard`'s three
- * refusals). Never throws — a bad card WARNS and the report still prints counts.
+ * refusals). Never throws - a bad card WARNS and the report still prints counts.
  */
 async function loadCardForPreflight(
   cardPath: string,
@@ -575,7 +575,7 @@ const COLOURS: Record<Severity, string> = { error: RED, warn: YELLOW, info: DIM 
  *
  * NOTE the one deviation from the surface brief: it described `ok`/`✓` rows for
  * passed checks. `Severity` as implemented is `info | warn | error` with no `ok`
- * member, and the engine emits nothing for a check that found nothing to say — so
+ * member, and the engine emits nothing for a check that found nothing to say - so
  * there are no passed-check rows to print. The evidence that counting happened is
  * the fact block and the counts, which print whether the report is clean or not.
  */
@@ -672,7 +672,7 @@ const money = (minorUnits: number, currency: string): string =>
   formatMoney({ minorUnits, currency });
 
 /**
- * Serialise a computed working into the rule-9 money object — the `cost` SIBLING
+ * Serialise a computed working into the rule-9 money object - the `cost` SIBLING
  * member. `estimatedTotalFromSuppliedRates` is a self-describing `MonetaryFigure`
  * (or `null` on partial coverage); there is NO field named `total`; every caveat
  * (`kind`/`isQuote`/`disclaimer`/`ratesFrom`/`bound`/coverage/`excludesTax`) is a
@@ -700,7 +700,7 @@ function serializeCost(w: CostWorking, card: RateCard, digest: string, useExpire
     ofLines: w.totalLines,
     excludesTax: !card.taxIncluded,
     // §5: money reached here past the card's validUntil only via an explicit opt-in,
-    // so this figure is stamped as computed from lapsed rates — inseparable from it.
+    // so this figure is stamped as computed from lapsed rates - inseparable from it.
     usedExpiredRates: w.expired && useExpiredAnyway,
     disclaimer: COST_DISCLAIMER,
     ratesFrom: {
@@ -738,7 +738,7 @@ function costRowLine(r: CostRow, currency: string): string {
  * The human cost block, appended below the counts. One row per multiplication, the
  * minimum charge as a visible row, a scalar total ONLY on full coverage (always
  * rendered WITH its source inline), else the "N of M not priced" headline with no
- * scalar total — nothing in the layout offers a single figure to copy (rule 2).
+ * scalar total - nothing in the layout offers a single figure to copy (rule 2).
  */
 function humanCost(w: CostWorking, card: RateCard): string {
   const cur = w.currency;

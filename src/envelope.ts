@@ -37,7 +37,7 @@ import { readFile } from 'node:fs/promises';
 import { EXIT_NAME, exitCodeFor, errorKind } from './exit-codes.ts';
 import { recordedWarnings, writeOut } from './output.ts';
 
-/** The integer the whole machine contract hangs off. Not semver — see the header. */
+/** The integer the whole machine contract hangs off. Not semver - see the header. */
 export const SCHEMA_VERSION = 1;
 
 export interface EnvelopeError {
@@ -47,7 +47,7 @@ export interface EnvelopeError {
   exit: number;
   /** The stable machine handle, e.g. `FORMAT_UNAVAILABLE`. Branch on this. */
   kind: string;
-  /** Human wording. Explicitly NOT stable — never branch on it. */
+  /** Human wording. Explicitly NOT stable - never branch on it. */
   message: string;
   detail?: string;
 }

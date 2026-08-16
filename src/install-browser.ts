@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * `lolly install-browser` — download Chromium for the CLI's Tier-B render path
+ * `lolly install-browser` - download Chromium for the CLI's Tier-B render path
  * (HTML-layout raster, jpg/webp, pdf, video). This is the ONE explicit step that pulls
- * a browser: it drives the `playwright-core` we already depend on — NOT the full
- * `playwright` package — so a plain `npm install` never downloads one.
+ * a browser: it drives the `playwright-core` we already depend on - NOT the full
+ * `playwright` package - so a plain `npm install` never downloads one.
  *
  *   lolly install-browser                 # Chromium → <repo>/.browsers
  *   lolly install-browser --with-deps      # + OS system deps (Linux containers)
@@ -20,7 +20,7 @@ import { INSTALL_BROWSERS_DIR } from '@lolly-tools/node-shell/browsers';
 
 export async function installBrowserCli(passthrough: string[] = []): Promise<number> {
   const require = createRequire(import.meta.url);
-  // Resolve the playwright-core CLI via its package.json (always resolvable) — cli.js is
+  // Resolve the playwright-core CLI via its package.json (always resolvable) - cli.js is
   // its sibling. Avoids depending on the subpath `exports` for './cli.js'.
   const cli = join(dirname(require.resolve('playwright-core/package.json')), 'cli.js');
 
