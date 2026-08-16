@@ -60,7 +60,7 @@ interface RunToolCliArgs {
    *  cannot be produced here. Off by default - silently substituting the format was
    *  the single worst defect in this shell (see the export section below). */
   htmlFallback?: boolean;
-  /** --text=outline|live (contract §1.3/§6a). Vector export outlines text by default;
+  /** --text=outline|live (contract section 1.3/section 6a). Vector export outlines text by default;
    *  'live' keeps editable `<text>` and accepts that the recipient needs the font. */
   text?: 'outline' | 'live';
 }
@@ -114,7 +114,7 @@ type CliExportOpts = ExportOpts & {
   /** The resolved Imprint decision, forwarded to the DOM-free bridge for the one
    *  raster it produces there (BMP). Vector/data DOM-free formats ignore it. */
   imprint?: boolean;
-  /** `--text=outline|live` - vector text-as-paths, and its opt-out (contract §6a). */
+  /** `--text=outline|live` - vector text-as-paths, and its opt-out (contract section 6a). */
   text?: 'outline' | 'live';
   /** Reported per run the svg branch could not outline (see the bridge). */
   onTextFallback?: (run: { text: string; reason: string }) => void;
@@ -150,7 +150,7 @@ export function quietVirtualConsole(jsdom: typeof import('jsdom')): InstanceType
       const what = notImplemented[1]!;
       if (seen.has(what)) return;
       seen.add(what);
-      process.stderr.write(`Note: jsdom has no ${what} — the tool's own feature detection handles this.\n`);
+      process.stderr.write(`Note: jsdom has no ${what} - the tool's own feature detection handles this.\n`);
       return;
     }
     process.stderr.write(`[jsdom] ${process.env.DEBUG ? (err.stack ?? err.message) : firstLine(err.message)}\n`);
@@ -263,7 +263,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     dom,
     profile,
     networkAllowlist: tool.manifest.network?.allowlist,
-    // The ladder's two upper rungs (plans/97 §6a); the bridge reads the active
+    // The ladder's two upper rungs (plans/97 section 6a); the bridge reads the active
     // version and the head off the catalog's own ledger. `--designv=latest` is
     // the documented "test against the edit head" lever and beats the pin.
     designVersion: { override: designvParam, pin: tool.manifest.designVersion ?? null },
@@ -477,7 +477,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
         `"${toolId}" is an on-device transform (file in → file out), so ${spelled} has nothing to act on: ` +
         'the output container follows the file you gave it, and the reserved export format never reaches the tool. ' +
         (ownFormat
-          ? `"${toolId}" has its own \`format\` input — write it as --input.format=${asked}.`
+          ? `"${toolId}" has its own \`format\` input - write it as --input.format=${asked}.`
           : 'Drop the flag, or use one of the tool\'s own inputs if it offers a conversion.'),
         'UNSUPPORTED_FLAG',
       );
@@ -537,7 +537,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     // backing buffer may be larger than the file, and `.buffer` would write the slack.
     let buf = Buffer.from(bytes);
     // WITHOUT --output, a transform streams to stdout like every other path in this
-    // shell (contract §11: docs/cli.md always claimed it did; the code instead wrote
+    // shell (contract section 11: docs/cli.md always claimed it did; the code instead wrote
     // `<name>-clean.svg` into the working directory and printed nothing, so a pipeline
     // that piped it got an empty stream and a surprise file). `--filename=<name>` is
     // how you ask for a named file without naming a path; the hook's own suggestion is
@@ -575,9 +575,9 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       const inBytes = fileIn ? (values[fileIn.id] as { size?: number } | undefined)?.size : undefined;
       const label = runtime.getHydratedString(tool.manifest.a11yLabel).trim();
       const delta = typeof inBytes === 'number' ? `${inBytes.toLocaleString()} → ${buf.length.toLocaleString()} bytes` : `${buf.length.toLocaleString()} bytes`;
-      note(`✓ ${label ? label + ' — ' : ''}${delta} → ${dest}`);
+      note(`✓ ${label ? label + ' - ' : ''}${delta} → ${dest}`);
     } else {
-      if (suggestedName) note(`Note: streaming to stdout. The tool suggested the name "${suggestedName}" — pass --output=<path> or --filename=<name> to write a file.`);
+      if (suggestedName) note(`Note: streaming to stdout. The tool suggested the name "${suggestedName}" - pass --output=<path> or --filename=<name> to write a file.`);
       await writeOut(buf);
     }
     // --verify: one line per file. The tool's exportFile is what runs the checks and
@@ -636,7 +636,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   );
 
   // The PRO float formats (exr / .hdr) are admitted for ANY tool, declared or not.
-  // plans/61-deeprichpixels.md §10 rules out per-tool depth declarations - depth is an
+  // plans/61-deeprichpixels.md section 10 rules out per-tool depth declarations - depth is an
   // export concern, tools stay declarative - so a tool.json listing "exr" would be
   // exactly the mistake the plan names (and would drag the schema enum plus every
   // per-brand generated catalog index along with it). The honest gate is at render
@@ -651,7 +651,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     );
   }
 
-  // ── provenance: DEFAULT ON, exactly as the web shell does (contract §12 O2) ──
+  // ── provenance: DEFAULT ON, exactly as the web shell does (contract section 12 O2) ──
   //
   // Decided by Andy on 2026-08-01, overruling this record's own recommendation: a file
   // made from the terminal carries the same marks as the same file made in the app.
@@ -698,7 +698,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   //
   // Without one, every CLI export is signed by a fresh anonymous self-signed
   // certificate and reads `signingCredential.untrusted` however the verifier is
-  // pinned - which made contract §12 O1 (the terminal pins the Lolly CA root) a
+  // pinned - which made contract section 12 O1 (the terminal pins the Lolly CA root) a
   // decision with nothing to apply it to. `--sign-key`/`--sign-cert` (or the
   // $LOLLY_SIGN_* environment) supply a real key + x5chain instead.
   //
@@ -778,7 +778,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     // Set up the rendering DOM. Brand vars go on first: the catalog's semantic
     // colour slots (--brand-primary, --brand-surface, …) land on the canvas root
     // BEFORE hydration, so a template's var(--brand-primary, fallback) reads the
-    // same brand via web, URL mode, and CLI (plans/archive/brand-token-contract.md §7).
+    // same brand via web, URL mode, and CLI (plans/archive/brand-token-contract.md section 7).
     const canvas = dom.window.document.getElementById('canvas')!;
     await applyBrandVars(canvas, host);
     canvas.innerHTML = runtime.getHydrated();
@@ -798,7 +798,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     // FLOAT samples instead of the default 16-bit HALF. Every other combination is
     // logged and ignored rather than obeyed - EXR has no integer sample type, Radiance
     // is RGBE by definition, and no CLI raster path has a >8-bit SOURCE yet, so
-    // --depth=16 on png/tiff here would be padding. See plans/61-deeprichpixels.md §10
+    // --depth=16 on png/tiff here would be padding. See plans/61-deeprichpixels.md section 10
     // and the note in docs/url-mode.md.
     if (depth !== 'auto') exportOpts.depth = depth;
     // BMP is the only DOM-free raster the bridge produces (exr/hdr are float and carry
@@ -822,7 +822,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     }
     // --password= sets the standard PDF's open-password (basic lock).
     if (targetFormat === 'pdf' && password) exportOpts.password = password;
-    // Text as paths on vector export (contract §6a). `--text=live` opts out; a run whose
+    // Text as paths on vector export (contract section 6a). `--text=live` opts out; a run whose
     // font this host cannot resolve keeps its live <text> and is reported here, once per
     // run, so the person exporting knows which words a recipient may see in a different
     // face. Under --strict the fallback is a refusal (exit 4), because a strict pipeline
@@ -966,7 +966,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       if (outputPath) outputPath = outputPath.replace(/\.[^./\\]+$/, '') + '.html';
       warn('HTML_FALLBACK',
         `"${targetFormat}" could not be produced here (${firstLine((e as Error).message)}). ` +
-        `--html-fallback was given, so HTML was written instead${outputPath ? ` — to ${outputPath}, NOT the name you asked for` : ''}.`);
+        `--html-fallback was given, so HTML was written instead${outputPath ? ` - to ${outputPath}, NOT the name you asked for` : ''}.`);
     }
 
     // `--text=live` on the BROWSER tier is a no-op, and used to be a silent one: the flag
@@ -988,13 +988,13 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       const detail = textFallbacks.map(f => `"${f.text.slice(0, 40)}" (${f.reason})`).join('; ');
       if (isStrict()) {
         throw refused(
-          `--strict: ${textFallbacks.length} text run${textFallbacks.length === 1 ? '' : 's'} could not be outlined and would ship as live <text> — ${detail}. ` +
+          `--strict: ${textFallbacks.length} text run${textFallbacks.length === 1 ? '' : 's'} could not be outlined and would ship as live <text> - ${detail}. ` +
           'No file was written. Install the font, or pass --text=live to accept live text.',
           'TEXT_NOT_OUTLINED',
         );
       }
       warn('TEXT_NOT_OUTLINED',
-        `${textFallbacks.length} text run${textFallbacks.length === 1 ? '' : 's'} kept live <text> instead of outlines — ${detail}. ` +
+        `${textFallbacks.length} text run${textFallbacks.length === 1 ? '' : 's'} kept live <text> instead of outlines - ${detail}. ` +
         'Recipients without that font will see a different face.', 'gate');
     }
   }
@@ -1007,7 +1007,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // Content Credentials are stamped into the finished bytes - URL mode's `c2pa` param
   // under the CLI transport (same last-byte-operation rule as the web shell's
   // stampC2pa). Applies to any C2PA-capable format the CLI produces (svg via the
-  // engine; png/jpg/pdf via the raster tiers). ON BY DEFAULT since contract §12 O2;
+  // engine; png/jpg/pdf via the raster tiers). ON BY DEFAULT since contract section 12 O2;
   // `--c2pa=off` / `--no-provenance` opt out. Ephemeral on-device signing only - 
   // verifiers report it unverified; the enrolled-identity path is a browser feature
   // (see docs/content-credentials-identity.md).
@@ -1028,7 +1028,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     // url-shot capture) stamp in Node. The Tier-B browser tier already stamped via the
     // forwarded ?c2pa param (exportUrl) - re-stamping would double the credential.
     if (finalFormat === 'pdf' && password) {
-      sayNotStamped('C2PA_SKIPPED', 'password-locked export — skipping Content Credentials (an encrypted document cannot take the C2PA update).');
+      sayNotStamped('C2PA_SKIPPED', 'password-locked export - skipping Content Credentials (an encrypted document cannot take the C2PA update).');
     } else {
       try {
         // The "what was this made from / where / when / how big" record, matching
@@ -1043,19 +1043,19 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
         }));
         buf = Buffer.from(stamped.buffer as ArrayBuffer, stamped.byteOffset, stamped.byteLength);
       } catch (e) {
-        sayNotStamped('C2PA_SKIPPED', `Content Credentials not attached — ${(e as Error).message}`);
+        sayNotStamped('C2PA_SKIPPED', `Content Credentials not attached - ${(e as Error).message}`);
       }
     }
     // `askedIdentity` is qualified by `wantC2pa` here and NOT above: this branch says
     // "the format cannot carry a credential", which is only true when one was actually
     // wanted. Without the qualifier, `--sign-key` with `--c2pa=off` claimed SVG has no
-    // C2PA container, which is false and points at the wrong thing — the identity is
+    // C2PA container, which is false and points at the wrong thing - the identity is
     // unused because credentials are off, which the warning above already says.
   } else if ((askedC2pa || (askedIdentity && wantC2pa)) && !webShellExport) {
     // Only when ASKED. A format with no C2PA container (dxf, csv, md, …) cannot carry a
     // credential at all, so with the default on this branch would have printed a line on
     // every single data-format render - noise about a promise nobody made.
-    warn('C2PA_SKIPPED', `format "${finalFormat}" has no C2PA container — Content Credentials skipped.`);
+    warn('C2PA_SKIPPED', `format "${finalFormat}" has no C2PA container - Content Credentials skipped.`);
   }
   // The Imprint's own skip, same rule: a note by default, a warning when asked for.
   if (imprintFloorSkip) {
@@ -1140,13 +1140,13 @@ export function exportFailure(format: string, failure: Error, domFreeError: Erro
 export const CLI_FLAGS = new Set([
   'press-profile', 'user-profile', 'link-password', 'html-fallback', 'help', 'version',
   'text', 'password-stdin', 'share', 'link', 'verify', 'rate-card',
-  // The one-word provenance opt-out (contract §12 O2). Consumed in the render path
+  // The one-word provenance opt-out (contract section 12 O2). Consumed in the render path
   // above; listed here so it is never reported as "not an input of <tool>".
   'no-provenance',
-  // The enrolled signing identity (contract §1.3). Both take a PATH - never key
+  // The enrolled signing identity (contract section 1.3). Both take a PATH - never key
   // material, which would be visible in `ps` to every user on the machine.
   'sign-key', 'sign-cert',
-  // Global flags (contract §1.2), consumed by the entry point but still present in the
+  // Global flags (contract section 1.2), consumed by the entry point but still present in the
   // params object a programmatic caller passes through.
   'quiet', 'verbose', 'strict', 'json',
 ]);
@@ -1345,7 +1345,7 @@ export async function loadToolOrThrow(toolId: string, fetchFile: (path: string) 
   } catch (e) {
     if ((e as { code?: string })?.code === 'ENOENT') {
       // Exit 2 (USAGE): a tool id that does not exist is a wrong invocation, not a
-      // failed render - a CI loop must be able to tell them apart (contract §5.1).
+      // failed render - a CI loop must be able to tell them apart (contract section 5.1).
       throw usageError(`Tool not found: ${toolId}. Run \`lolly list\` to list tools.`, 'UNKNOWN_TOOL');
     }
     throw e;
@@ -1419,7 +1419,7 @@ async function loadRateCardCli(cardPath: string | undefined): Promise<void> {
     const why = card.error === 'no-priced-lines'
       ? 'it validates but has no priced lines, so nothing can be costed with it'
       : card.error === 'example-card'
-        ? 'it is the shipped example — copy it and type your printer’s own rates'
+        ? 'it is the shipped example - copy it and type your printer’s own rates'
         : 'it is not a rate card this can read';
     warn('RATE_CARD_REFUSED',
       `The rate card "${cardPath}" was refused (${card.error}): ${why}. Continuing without it.`);
@@ -1430,7 +1430,7 @@ async function loadRateCardCli(cardPath: string | undefined): Promise<void> {
   const priced = card.lines.filter((l) => !l.disabled).length;
   const claimed = [card.issuer?.name, card.issuer?.issued].filter(Boolean).map(scrubCtl).join(', ');
   const said = claimed ? `The file says: ${claimed} (Lolly has not verified this). ` : '';
-  note(`✓ Rate card loaded — ${said}${digest} · prices ${priced} of ${card.lines.length} lines. ` +
+  note(`✓ Rate card loaded - ${said}${digest} · prices ${priced} of ${card.lines.length} lines. ` +
     'No prices are computed in this run.');
 }
 
@@ -1610,7 +1610,7 @@ export async function listAssetsCli(query?: string, opts: { type?: string; json?
   }
   const width = Math.min(48, matches.reduce((w, a) => Math.max(w, a.id.length), 0));
   process.stdout.write(
-    `Catalog assets${type ? ` [${type}]` : ''}${q ? ` matching "${query}"` : ''} — ${matches.length} of ${index.assets.length}:\n`,
+    `Catalog assets${type ? ` [${type}]` : ''}${q ? ` matching "${query}"` : ''} - ${matches.length} of ${index.assets.length}:\n`,
   );
   for (const a of matches) {
     process.stdout.write(`  ${a.id.padEnd(width)}  ${`(${a.type})`.padEnd(10)} ${a.name ?? ''}\n`);

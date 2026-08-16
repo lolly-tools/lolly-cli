@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's exit-code taxonomy - frozen at GA (plans/73-cli-ga-contract.md §5.1).
+ * The CLI's exit-code taxonomy - frozen at GA (plans/73-cli-ga-contract.md section 5.1).
  *
  * Eight codes, not a boolean. The distinctions that earn their place:
  *   • 2 vs 1 - "you used it wrong" is not "it ran and failed"; a CI loop must be
@@ -47,7 +47,7 @@ export const EXIT_NAME: Record<number, string> = Object.fromEntries(
 /**
  * An error that already knows its exit code.
  *
- * `kind` is the STABLE machine handle (contract §10: `error.code`/`error.kind` are
+ * `kind` is the STABLE machine handle (contract section 10: `error.code`/`error.kind` are
  * promised, `error.message` is not), so a pipeline branches on `CAPABILITY_UNAVAILABLE`
  * rather than on a sentence we reserve the right to reword.
  */

@@ -33,7 +33,7 @@
  * always rendered WITH its source inline, never a bare figure. It NEVER originates,
  * defaults, infers or approximates a price. A ceiling count stays "up to" all the
  * way to the total. `--rate-card` is a device-local FILE flag, never a URL param:
- * a pasted link can carry neither a card nor money (`canShowMoney`, §5). Expired
+ * a pasted link can carry neither a card nor money (`canShowMoney`, section 5). Expired
  * rates suppress money (counts show) unless `--use-expired-rates` is given.
  *
  * ## What it does NOT do
@@ -48,12 +48,12 @@
  * every such figure comes FROM that card (currency and rates both). Nothing is ever
  * originated, defaulted, inferred or approximated. A number Lolly made up and
  * presented as money is worse than showing nothing.
- * See `plans/65-preflight-and-cost.md` §6 and §8.
+ * See `plans/65-preflight-and-cost.md` section 6 and section 8.
  *
  * ## Streams and exit codes
  *
  *   stdout - the report, and ONLY the report. In `--json`, exactly one JSON
- *            document ON EVERY PATH - the shared envelope (§5.2), with the
+ *            document ON EVERY PATH - the shared envelope (section 5.2), with the
  *            report as `result` - so `lolly preflight qr-code --json | jq
  *            .result.findings` works unconditionally. The exit-2 path emits the
  *            same envelope with `ok:false` and an `error` rather than nothing:
@@ -66,7 +66,7 @@
  *   0 - preflight ran; no `error` findings.
  *   4 - REFUSED: preflight ran and a protective check said no. At least one
  *       `error` finding (or, with `--strict`, a `warn`). It is 4 and not 1
- *       because §5.1 reserves 1 for "it ran and FAILED": preflight did not fail,
+ *       because section 5.1 reserves 1 for "it ran and FAILED": preflight did not fail,
  *       it worked and reported a problem - the same event `validate` reports with
  *       4. Two check commands must not return opposite codes for one class of
  *       finding, or a CI wrapper branching on `$?` sends a print error down the
@@ -110,7 +110,7 @@ import { useColor } from './output.ts';
 import { EXIT } from './exit-codes.ts';
 
 const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', YELLOW = '\x1b[33m', RESET = '\x1b[0m';
-// NO_COLOR is honoured alongside the isTTY check, same as validate.ts (contract §1.5).
+// NO_COLOR is honoured alongside the isTTY check, same as validate.ts (contract section 1.5).
 const tty = useColor(process.stdout);
 const paint = (code: string, s: string): string => (tty ? code + s + RESET : s);
 
@@ -159,7 +159,7 @@ const REFUSED: Record<string, string> = {
   // invocation across two destinations: the report went to the file, but the exit-2
   // refusal envelope went to stdout, so the run whose diagnosis you needed left no
   // file behind. stdout carries the report on every path; the shell already does.
-  out: '--out was removed before GA. preflight writes its report to stdout on every path — redirect it: `lolly preflight <tool> --json > report.json`.',
+  out: '--out was removed before GA. preflight writes its report to stdout on every path - redirect it: `lolly preflight <tool> --json > report.json`.',
 };
 
 class UsageError extends Error {}
@@ -319,7 +319,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   // render would not produce is worse than not preflighting at all. It is the permanent,
   // frozen escape hatch, so it has to work on the command that checks the escape hatch.
   Object.assign(values, explicitInputValues(params, tool.manifest));
-  // `--no-provenance` (contract §12 O2): the one-word bare render. Read the same way
+  // `--no-provenance` (contract section 12 O2): the one-word bare render. Read the same way
   // runToolCli reads it, so the report and the render agree.
   const bare = isOn(params['no-provenance']);
 
@@ -383,7 +383,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
       cuts,
       password: Boolean(password),
       // The RESOLVED settings, not the raw params. Both marks are default-on for a CLI
-      // render (contract §12 O2), so reporting an absent flag as `not-set` would have
+      // render (contract section 12 O2), so reporting an absent flag as `not-set` would have
       // preflight describe a job the render would not produce - the one thing this
       // command exists to prevent. `--no-provenance` resolves both to false.
       c2pa: { known: true, value: bare ? false : c2pa ? c2pa.on : c2paDefaultOn(tool.manifest) },
@@ -411,7 +411,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
   const warns = report.findings.filter(f => f.severity === 'warn').length;
   // REFUSED (4), not FAILED (1): the check ran and said no. See the header. The cost
   // pass NEVER changes the exit: a missing/expired/partial rate card is the normal
-  // state, and money is not a protective check (header, §7 exit codes).
+  // state, and money is not a protective check (header, section 7 exit codes).
   const exit = errors > 0 || (strict && warns > 0) ? EXIT.REFUSED : EXIT.OK;
 
   // ── The cost pass. Only reached with `--rate-card`; counts-only otherwise. It
@@ -459,7 +459,7 @@ async function run(rest: string[], flags: Record<string, string>): Promise<numbe
     }
   }
 
-  // One envelope, every command (contract §5.2). preflight used to emit its own
+  // One envelope, every command (contract section 5.2). preflight used to emit its own
   // `$format: lolly-preflight-*` document, which made it the second machine shape in a
   // CLI whose whole machine promise is that there is one. The report is `result`
   // inside the envelope; the money object rides as a SIBLING `cost` member beside
@@ -496,7 +496,7 @@ async function loadCardForPreflight(
     const why = card.error === 'no-priced-lines'
       ? 'it validates but has no priced lines, so nothing can be costed with it'
       : card.error === 'example-card'
-        ? 'it is the shipped example — copy it and type your printer’s own rates'
+        ? 'it is the shipped example - copy it and type your printer’s own rates'
         : 'it is not a rate card this can read';
     return { refused: `The rate card "${cardPath}" was refused (${card.error}): ${why}.` };
   }
@@ -601,13 +601,13 @@ export function humanReport(report: PreflightReport, job: PreflightJob, manifest
     for (const c of report.counts) {
       const box = c.box ? ` (${c.box})` : '';
       const bound = c.bound === 'ceiling' ? ' at most' : '';
-      out.push(`  ${paint(DIM, '·')} ${clean(c.kind)}${box}${bound}: ${clean(fmtNum(c.value))} ${clean(c.unit)} ${paint(DIM, `— ${clean(c.basis)}`)}`);
+      out.push(`  ${paint(DIM, '·')} ${clean(c.kind)}${box}${bound}: ${clean(fmtNum(c.value))} ${clean(c.unit)} ${paint(DIM, ` - ${clean(c.basis)}`)}`);
     }
   }
 
   out.push('');
   out.push(paint(DIM,
-    `${report.findings.length} ${report.findings.length === 1 ? 'finding' : 'findings'} — ` +
+    `${report.findings.length} ${report.findings.length === 1 ? 'finding' : 'findings'} - ` +
     `${errors} to fix, ${warns} to check, ${infos} to know (${report.gaps.length} of them a stated gap). ` +
     `engine ${clean(report.engine)}`));
   return out.join('\n') + '\n';
@@ -623,7 +623,7 @@ function headline(errors: number, warns: number, infos: number): string {
 function findingRow(f: Finding): string {
   const mark = paint(COLOURS[f.severity] ?? DIM, MARKS[f.severity] ?? '·');
   const needs = f.needs ? paint(DIM, `  [needs: ${clean(f.needs)}]`) : '';
-  return `  ${mark} ${clean(f.id)} ${paint(DIM, '— ' + clean(f.message))}${needs}`;
+  return `  ${mark} ${clean(f.id)} ${paint(DIM, ' - ' + clean(f.message))}${needs}`;
 }
 
 /**
@@ -699,7 +699,7 @@ function serializeCost(w: CostWorking, card: RateCard, digest: string, useExpire
     coversLines: w.coveredLines,
     ofLines: w.totalLines,
     excludesTax: !card.taxIncluded,
-    // §5: money reached here past the card's validUntil only via an explicit opt-in,
+    // section 5: money reached here past the card's validUntil only via an explicit opt-in,
     // so this figure is stamped as computed from lapsed rates - inseparable from it.
     usedExpiredRates: w.expired && useExpiredAnyway,
     disclaimer: COST_DISCLAIMER,
@@ -745,7 +745,7 @@ function humanCost(w: CostWorking, card: RateCard): string {
   const out: string[] = [''];
   out.push(paint(BOLD, 'Cost, worked out from your rate card'));
 
-  // §5 reported speech: the file's own claims, never provenance, never a bare
+  // section 5 reported speech: the file's own claims, never provenance, never a bare
   // attribution beside a figure.
   const issuer = clean(card.issuer.name ?? '');
   const issued = clean(card.issuer.issued ?? '');
@@ -767,7 +767,7 @@ function humanCost(w: CostWorking, card: RateCard): string {
     const shown = w.bound === 'ceiling' ? `up to ${totalStr}` : totalStr;
     const date = issued || '(date not stated)';
     out.push(`  ${paint(GREEN, `${shown} using ${issuer || 'your rate card'} rates dated ${date}`)}`);
-    // §5: an opt-in past validUntil stamps the figure with the expiry date, so a lapsed
+    // section 5: an opt-in past validUntil stamps the figure with the expiry date, so a lapsed
     // total is never read as a current one.
     if (w.expired) {
       const when = card.issuer.validUntil ? ` on ${clean(card.issuer.validUntil)}` : '';
@@ -780,7 +780,7 @@ function humanCost(w: CostWorking, card: RateCard): string {
     const pressRun = w.uncosted.some((u) => u.reason === 'no-sheet-count') ? ', including the press run' : '';
     out.push(`  ${paint(YELLOW, `${unpriced} of ${w.totalLines} cost lines are not priced by this card${pressRun}. Lolly is not showing a total.`)}`);
     for (const u of w.uncosted) {
-      out.push(`  ${paint(DIM, '·')} ${clean(u.lineId)} ${paint(DIM, `— not priced (${clean(u.reason)})`)}`);
+      out.push(`  ${paint(DIM, '·')} ${clean(u.lineId)} ${paint(DIM, ` - not priced (${clean(u.reason)})`)}`);
     }
   }
 

@@ -2,7 +2,7 @@
 /**
  * Outline the live `<text>` runs of a native-`<svg>` template into `<path>` glyphs,
  * using host.text (HarfBuzz) - the CLI half of "vector output is text as paths"
- * (plans/73-cli-ga-contract.md §6a).
+ * (plans/73-cli-ga-contract.md section 6a).
  *
  * Why this exists: until GA the CLI's svg branch serialised jsdom's `<text>` verbatim,
  * so a recipient without the font opened the file and saw a different design, with
@@ -177,7 +177,7 @@ export async function outlineSvgText(
         ...(font.variations ? { variations: font.variations } : {}),
       });
     } catch (e) {
-      result.fallbacks.push({ text: raw, reason: `shaping failed — ${(e as Error).message}` });
+      result.fallbacks.push({ text: raw, reason: `shaping failed - ${(e as Error).message}` });
       continue;
     }
     if (!shaped?.d) { result.fallbacks.push({ text: raw, reason: 'the font produced no glyph outlines' }); continue; }

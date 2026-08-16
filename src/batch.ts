@@ -31,7 +31,7 @@ export async function batchTemplateCli(toolIds: string[], opts: { json?: boolean
     try {
       const t = await loadTool(id, fetchFile);
       tools.push({ id: t.manifest.id, inputs: (t.manifest.inputs ?? []).map(i => ({ id: i.id })) });
-    } catch { warn('UNKNOWN_TOOL', `unknown tool "${id}" — skipped.`); }
+    } catch { warn('UNKNOWN_TOOL', `unknown tool "${id}" - skipped.`); }
   }
   if (!tools.length) {
     throw usageError('No known tools given. Usage: lolly batch --template=qr-code,chart-creator', 'UNKNOWN_TOOL');
@@ -137,7 +137,7 @@ export async function runBatchCli(csvPath: string, opts: { outDir: string; keepG
     if (row.height) params.height = String(row.height);
     if (row.unit) params.unit = row.unit;
     if (row.dpi) params.dpi = String(row.dpi);
-    // PROVENANCE OFF unless the row asks for it (contract §12 O2). A single `lolly run`
+    // PROVENANCE OFF unless the row asks for it (contract section 12 O2). A single `lolly run`
     // is somebody making an asset, so it carries Content Credentials and the Imprint
     // like the app does; a batch is a build step, and both marks embed a fresh
     // timestamp, so signing 500 rows by default would make a regenerated folder differ
@@ -163,11 +163,11 @@ export async function runBatchCli(csvPath: string, opts: { outDir: string; keepG
       });
       process.stderr.write(`✗ row ${i + 1} (${row.toolId}): ${(e as Error).message}\n`);
       if (!opts.keepGoing) {
-        process.stderr.write('Aborting — use --keep-going to render the rest.\n');
+        process.stderr.write('Aborting - use --keep-going to render the rest.\n');
         return finish(worst);
       }
     }
   }
-  process.stderr.write(`\nBatch done — ${ok} rendered${failed ? `, ${failed} failed` : ''} → ${outDir}\n`);
+  process.stderr.write(`\nBatch done - ${ok} rendered${failed ? `, ${failed} failed` : ''} → ${outDir}\n`);
   return finish(worst);
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's ONE machine surface (plans/73-cli-ga-contract.md §5.2).
+ * The CLI's ONE machine surface (plans/73-cli-ga-contract.md section 5.2).
  *
  * Every `--json` emission from every command is the same envelope, so an agent writes
  * one parser and one failure branch rather than one per subcommand:
@@ -25,7 +25,7 @@
  *     `validate` answering "no credential here" exits 5 with `ok:false` and a full
  *     `result`, because that is an answer, not a breakage. `error` is non-null only
  *     when there is nothing to report but the failure. Consumers branch on
- *     `error.kind` (stable, §10) or the process exit code, never on `error.message`.
+ *     `error.kind` (stable, section 10) or the process exit code, never on `error.message`.
  *
  * Additive-change policy, also frozen: keys may appear inside `result`/`error`/
  * `warnings` at any time and consumers MUST ignore unknown ones; enum values may be

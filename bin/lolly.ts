@@ -10,7 +10,7 @@
  * pairs become the same input values the web shell would parse from ?foo=bar in the URL
  * hash. The engine doesn't know which path delivered them.
  *
- * TWO RULES this file exists to enforce (plans/73-cli-ga-contract.md §0):
+ * TWO RULES this file exists to enforce (plans/73-cli-ga-contract.md section 0):
  *   • stdout carries the payload and nothing else; every diagnostic goes to stderr.
  *   • NOTHING here calls process.exit() after writing to stdout. An exit() right after
  *     a pipe write discards the unflushed remainder - a 638 KB PNG arrived as 65536
@@ -27,7 +27,7 @@ import { EXIT, exitCodeFor, usageError } from '../src/exit-codes.ts';
 import { configureOutput, strictExitCode, note, writeOut, keepConsoleOffStdout } from '../src/output.ts';
 import { beginCommand, emitError, jsonRequested, envelopeEmitted } from '../src/envelope.ts';
 
-const USAGE = `lolly — constraint-first asset generation from the terminal.
+const USAGE = `lolly - constraint-first asset generation from the terminal.
 
 Usage:
   lolly                                    list tools
@@ -45,7 +45,7 @@ Subcommands:
                            printer's own rates (--run-length=N feeds perUnit lines;
                            --use-expired-rates opts in past the card's validUntil)
                         [--strict]         (exit 4 when a check says no; 2 if it could
-                                            not run. Report goes to stdout — redirect it)
+                                            not run. Report goes to stdout - redirect it)
   lolly smoke [--only=a,b] [--format=svg]  render every catalog tool at defaults (CI gate)
   lolly validate <file…> [--json] [--deep] check Content Credentials (--deep adds the
                                            neural pixel-watermark scan; needs a browser)
@@ -56,7 +56,7 @@ Subcommands:
                         [--no-default-anchors]        …and trust ONLY what you pinned:
                                            drops the Lolly CA root and the vendored
                                            C2PA list. With nothing pinned, nothing is
-                                           trusted — the bare-trust check
+                                           trusted - the bare-trust check
   lolly install-browser [--with-deps]      one-time Chromium download for the full render
                                            tier (also needs \`npm run build:web\`)
 
@@ -79,7 +79,7 @@ Export options:
   --text=outline|live      vector text as paths (default) or editable <text>
   --input.<id>=<value>     set a tool input whose name collides with a reserved flag
   --html-fallback          OPT IN: if the requested format cannot be produced here, write
-                           HTML under a .html name instead of failing. Off by default —
+                           HTML under a .html name instead of failing. Off by default - 
                            without it a format that cannot be produced is an error, never
                            a different file under the name you asked for.
   --bleed=3mm --marks=crop,reg,bars        print prep (routes through the full render tier)
@@ -93,7 +93,7 @@ Export options:
   --imprint                embed the Lolly pixel watermark (raster). ON BY DEFAULT
                            for the formats that can carry it (--imprint=0 opts out)
   --no-provenance          one word for a bare render: no credential, no imprint,
-                           no durable mark. THE deterministic-bytes switch — both
+                           no durable mark. THE deterministic-bytes switch - both
                            marks embed a fresh timestamp, so a default render is
                            not byte-identical run to run
   --sign-key=<key.pem>     sign the credential with an enrolled identity instead of an
@@ -129,7 +129,7 @@ Exit codes:
   0  OK                the requested thing was produced
   1  FAILED            it was possible, it ran, it failed
   2  USAGE             wrong invocation: unknown tool/format/flag, unreadable path
-  3  UNAVAILABLE_HERE  impossible in THIS installation (no browser, no capability) —
+  3  UNAVAILABLE_HERE  impossible in THIS installation (no browser, no capability) - 
                        the retry-on-another-runner code
   4  REFUSED           a protective check said no (--verify, format mismatch, forged
                        credential)
@@ -144,7 +144,7 @@ Examples:
 `;
 
 const args = argv.slice(2);
-// Rule 1 of §5.3, enforced before any command runs: stdout is the payload. A tool hook
+// Rule 1 of section 5.3, enforced before any command runs: stdout is the payload. A tool hook
 // calling console.log would otherwise write into the middle of an exported PNG.
 keepConsoleOffStdout();
 // A downstream reader that closes early (`lolly list | head -1`) makes the next write to
@@ -152,13 +152,13 @@ keepConsoleOffStdout();
 // as Node's raw "Unhandled 'error' event" stack trace and exit 1 - which under
 // `set -o pipefail` fails the whole pipeline for an ordinary `| head`. A closed pipe is
 // not a failure of this run: it ends quietly, keeping whatever exit code the work had.
-// Swallowed rather than exited on, because §0/B3 forbids process.exit() around stdout - 
+// Swallowed rather than exited on, because section 0/B3 forbids process.exit() around stdout - 
 // the event loop drains and the process ends with the code the work already set. Every
 // other stdout error still reaches the caller through writeOut's rejected promise.
 process.stdout.on('error', (err: NodeJS.ErrnoException) => {
   if (err?.code !== 'EPIPE') throw err;
 });
-// §5.2 says a `--json` run puts a complete envelope on stdout on EVERY path. The parse
+// section 5.2 says a `--json` run puts a complete envelope on stdout on EVERY path. The parse
 // below can itself throw (a bare value-flag is exit 2), and `beginCommand` had not run
 // yet, so `lolly validate f.png --json --require > r.json` left a zero-byte file and an
 // agent reading stdout got EOF - the exact failure the envelope was written to remove.
@@ -199,7 +199,7 @@ try {
   }
   if (process.env.DEBUG) writeErr((err.stack as string) + '\n');
   process.exitCode = exitCodeFor(e);
-  // --json covers the FAILURE path (contract §5.2). Without this, `lolly validate
+  // --json covers the FAILURE path (contract section 5.2). Without this, `lolly validate
   // /nope.png --json > r.json` left a zero-byte file and an agent reading stdout got
   // EOF; now stdout carries a complete envelope on every path. `envelopeEmitted` guards
   // the case where the command already wrote its own document and then threw.
@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   if (g.quiet) process.stderr.write = (() => true) as typeof process.stderr.write;
 
   const cmd = positionals[0];
-  // Which command this is, and whether stdout must carry the §5.2 envelope. Recorded
+  // Which command this is, and whether stdout must carry the section 5.2 envelope. Recorded
   // before any work, so the top-level catch can name the command in a failure envelope
   // even when the throw happened before the command function was reached. A bare tool
   // id reports as `describe`/`run` - the verb it is sugar for - not as its own name.
@@ -273,7 +273,7 @@ async function main(): Promise<void> {
       metadata: isOn(flags.metadata),
       strict: g.strict,
       trustAnchors: repeated['trust-anchor'],
-      // --no-default-anchors: pinned roots only (contract §12 O1). Absent = the
+      // --no-default-anchors: pinned roots only (contract section 12 O1). Absent = the
       // default set (Lolly CA root + the vendored C2PA list).
       defaultAnchors: !isOn(flags['no-default-anchors']),
     });
@@ -314,7 +314,7 @@ async function main(): Promise<void> {
     if (flags.output !== undefined) {
       // It used to accept --output, write `<out-dir>/01-….svg` anyway, and say nothing
       // (contract B13). A batch has many outputs; one path cannot name them.
-      throw usageError('batch writes one file per row into a directory — use --out-dir=<dir>, not --output.', 'CONFLICTING_FLAGS');
+      throw usageError('batch writes one file per row into a directory - use --out-dir=<dir>, not --output.', 'CONFLICTING_FLAGS');
     }
     if (flags.template !== undefined) {
       const { batchTemplateCli } = await import('../src/batch.ts');
@@ -381,7 +381,7 @@ async function main(): Promise<void> {
  *  flag→argument mapping cannot drift between them. */
 async function render(toolId: string, flags: Record<string, string>, urlFormat?: string, repeated: Record<string, string[]> = {}): Promise<void> {
   if (isOn(flags.json)) {
-    // `--json` on a render is deliberately absent at GA (contract §3): run's stdout IS
+    // `--json` on a render is deliberately absent at GA (contract section 3): run's stdout IS
     // the artefact. Accepting and ignoring the flag is the silent class this shell has
     // spent its whole life removing.
     throw usageError(

@@ -14,7 +14,7 @@
  * reason this is a function and not a bare readline call.
  *
  * Reads and writes /dev/tty-equivalent streams only through process.stdin/stderr - 
- * the prompt goes to STDERR, because stdout carries the payload (contract §0).
+ * the prompt goes to STDERR, because stdout carries the payload (contract section 0).
  */
 
 /**

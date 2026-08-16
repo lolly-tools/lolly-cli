@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * argv → flags + positionals, and the frozen vocabulary around them
- * (plans/73-cli-ga-contract.md §1.1–§1.3).
+ * (plans/73-cli-ga-contract.md section 1.1–section 1.3).
  *
  * The parser is deliberately tiny and deliberately FROZEN: `--k=v`; a bare `--k` is
  * "1"; `--k=0|false|off|no` is false; values may span newlines (a multiline longtext
@@ -42,12 +42,12 @@ export const VALUE_FLAGS = new Set([
   // "1" would name no version, fall silently through the resolution ladder, and
   // render against a different design system under the name the author asked for.
   'designv',
-  // `profile` is listed BESIDE `press-profile` because it is its frozen alias (§B1),
+  // `profile` is listed BESIDE `press-profile` because it is its frozen alias (section B1),
   // and a flag's two spellings must refuse the same things. Without it a bare
   // `--profile` parsed to "1" and handed the CMYK export a press condition literally
   // named "1", while `--press-profile` alone exited 2. Same flag, opposite answers.
   'press-profile', 'profile', 'user-profile', 'link-password', 'text', 'trust-anchor',
-  // NOTE: no bare `out`. `preflight --out=` was removed before GA (§1.4) - one shell,
+  // NOTE: no bare `out`. `preflight --out=` was removed before GA (section 1.4) - one shell,
   // one spelling for "where output goes" per shape: `--output` for a single file,
   // `--out-dir` for a directory of them. Leaving `out` here also made a bare `--out`
   // a usage error on EVERY command, so a tool declaring a boolean input `out` could
@@ -60,14 +60,14 @@ export const VALUE_FLAGS = new Set([
   'sign-key', 'sign-cert',
 ]);
 
-/** Subcommand words a tool id may never take (contract §1.1). `completion` is reserved
+/** Subcommand words a tool id may never take (contract section 1.1). `completion` is reserved
  *  now so the deferred `lolly completion <shell>` can land additively later. */
 export const RESERVED_SUBCOMMANDS = [
   'list', 'describe', 'run', 'assets', 'batch', 'smoke', 'validate', 'preflight',
   'install-browser', 'completion', 'help', 'version',
 ] as const;
 
-/** Global flags valid on every command (contract §1.2). */
+/** Global flags valid on every command (contract section 1.2). */
 export interface GlobalFlags {
   json: boolean;
   quiet: boolean;
@@ -133,7 +133,7 @@ export function globalFlags(flags: Record<string, string>): GlobalFlags {
 }
 
 /**
- * `--text=outline|live` (contract §1.3/§6a). Anything else is a usage error rather than
+ * `--text=outline|live` (contract section 1.3/section 6a). Anything else is a usage error rather than
  * a silent "outline", because the whole point of the flag is knowing which you got.
  */
 export function textMode(v: string | undefined): 'outline' | 'live' | undefined {

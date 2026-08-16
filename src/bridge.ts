@@ -61,7 +61,7 @@ import { captureUrl } from '../../../packages/node-shell/src/url-capture.ts';
 import { createNodeImagesAPI } from '../../../packages/node-shell/src/images.ts';
 // LOLLY_STATE_DIR resolution (shared with the TUI). RELATIVE for the MCP-bundle reason.
 import { resolveStateDir } from '../../../packages/node-shell/src/state-dir.ts';
-// Text-as-paths on the svg branch (contract §6a). Local to this shell: it resolves
+// Text-as-paths on the svg branch (contract section 6a). Local to this shell: it resolves
 // fonts through host.text's headless registry, not the web shell's fetching one.
 import { outlineSvgText } from './svg-outline.ts';
 import { unavailableHere } from './exit-codes.ts';
@@ -81,7 +81,7 @@ const REPO_ROOT = repoRoot();
  *   • capture - host.capture.page drives the scoped Chromium. Present even when no
  *                browser is installed: that is a "not installed HERE yet" (exit 3 with
  *                `lolly install-browser`), not "this shell cannot do it".
- * What is out: clipboard (throws by design, §4.4), camera/microphone/screen (no
+ * What is out: clipboard (throws by design, section 4.4), camera/microphone/screen (no
  * device access in a headless process, and shelling out to one is a non-goal),
  * ffmpeg (never shipped), filesystem (the RUNNER reads and writes files; the host
  * bridge exposes no filesystem API a tool could call).
@@ -134,7 +134,7 @@ interface CliExportRenderOpts extends ExportOpts {
    *  export.ts's ExportOpts), so this is the CLI's local extension of the same shape,
    *  in url-mode's 0–100 author dial units. Absent ⇒ SDR ⇒ exr/hdr refuse. */
   hdr?: { targets?: readonly string[]; peakNits?: number; reach?: number; lift?: number; richness?: number } | null;
-  /** `--text=outline|live` (contract §1.3). Default outline; 'live' keeps `<text>`. */
+  /** `--text=outline|live` (contract section 1.3). Default outline; 'live' keeps `<text>`. */
   text?: 'outline' | 'live';
   /** Reported once per run that could not be outlined, so the runner can warn (and
    *  refuse under --strict) instead of the bridge writing to stderr itself. */
@@ -152,7 +152,7 @@ interface CliBridgeOpts {
    *  run. Absent/empty ⇒ every host.net fetch rejects (same as the web shell). */
   networkAllowlist?: readonly string[];
   /**
-   * The two upper rungs of the design-system resolution ladder (plans/97 §6a)
+   * The two upper rungs of the design-system resolution ladder (plans/97 section 6a)
    * for THIS run: `override` is `--designv=`/`?designv=`, `pin` is the tool
    * manifest's `designVersion`. The lower rungs (the catalog's active version,
    * then the edit head) are read off the head document's own ledger, so a caller
@@ -253,7 +253,7 @@ export async function createCliBridge(
   // token-bound colour inputs fall back to their cached hex and the semantic
   // brand vars (applyBrandVars below) stay unset.
   //
-  // "Head" is the descendant-exclusion rule of plans/97 §6a, applied through the
+  // "Head" is the descendant-exclusion rule of plans/97 section 6a, applied through the
   // ONE engine predicate the web bridge and the MCP tokens resource also call: a
   // published version ships as `<head>/<slug>`, and a version must never be
   // picked as "the design system". With zero or one tokens asset - every catalog
@@ -277,7 +277,7 @@ export async function createCliBridge(
   }
 
   /**
-   * The document THIS run renders against: the §6a ladder applied once, over the
+   * The document THIS run renders against: the section 6a ladder applied once, over the
    * head's own ledger - `--designv=` → the manifest pin → the catalog's active
    * version → the head.
    *
@@ -305,19 +305,19 @@ export async function createCliBridge(
       // author asked for one version, silently got another, and the flag they
       // typed left no trace at all.
       if (override && override !== DESIGN_VERSION_LATEST && !index.versions.some(v => v.slug === override)) {
-        host.log('warn', `--designv=${override} names no design-system version in this catalog — rendering against ${slug === DESIGN_VERSION_LATEST ? 'the edit head' : `"${slug}"`} instead.`);
+        host.log('warn', `--designv=${override} names no design-system version in this catalog - rendering against ${slug === DESIGN_VERSION_LATEST ? 'the edit head' : `"${slug}"`} instead.`);
       }
       if (slug === DESIGN_VERSION_LATEST) return head;
       const entry = index.versions.find(v => v.slug === slug);
       const asset = headTokensAsset ? assetById.get(versionAssetId(headTokensAsset.id, slug)) : undefined;
       if (!entry || !asset) {
-        host.log('warn', `design-system version "${slug}" is listed but ships no tokens asset — rendering against the edit head instead.`);
+        host.log('warn', `design-system version "${slug}" is listed but ships no tokens asset - rendering against the edit head instead.`);
         return head;
       }
       try {
         return applyPinnedAssets(await readAssetDoc(asset), entry.assets ?? []);
       } catch (e) {
-        host.log('warn', `design-system version "${slug}" could not be read (${e instanceof Error ? e.message : e}) — rendering against the edit head instead.`);
+        host.log('warn', `design-system version "${slug}" could not be read (${e instanceof Error ? e.message : e}) - rendering against the edit head instead.`);
         return head;
       }
     })().catch(() => tokensDoc());
@@ -435,7 +435,7 @@ export async function createCliBridge(
         }
         // Unknown theme / non-themable file → plain bytes under the requested
         // id (kept so a temporarily unresolvable theme isn't stripped from
-        // persisted state — same contract as the web bridge).
+        // persisted state - same contract as the web bridge).
       }
       if (treatment && meta.type === 'raster') {
         const def = (await photoTreatments()).find(t => t.id === treatment);
@@ -488,7 +488,7 @@ export async function createCliBridge(
         }));
     },
     async pick() {
-      throw new Error('Asset picker not available in CLI mode — list ids with `lolly assets [query]` and pass one to the asset input (e.g. --logo=suse/logo/hor-pos-green)');
+      throw new Error('Asset picker not available in CLI mode - list ids with `lolly assets [query]` and pass one to the asset input (e.g. --logo=suse/logo/hor-pos-green)');
     },
     async isAvailable(id) {
       return assetById.has(parseThemedAssetId(id).baseId);
@@ -504,8 +504,8 @@ export async function createCliBridge(
   };
 
   // host.state - in memory by default (a CLI invocation is ephemeral), on DISK when
-  // the machine names a state directory (contract §1.5/B14). Opt-in on purpose: a
-  // render must not leave files in $HOME nobody asked for (non-goal §8.7), but a tool
+  // the machine names a state directory (contract section 1.5/B14). Opt-in on purpose: a
+  // render must not leave files in $HOME nobody asked for (non-goal section 8.7), but a tool
   // that saves state was previously unscriptable, because every run started empty.
   const stateHome = resolveStateDir();
   const stateFsDir = stateHome.explicit ? join(stateHome.dir, 'state') : null;
@@ -533,7 +533,7 @@ export async function createCliBridge(
           for (const f of await readdir(stateFsDir)) {
             if (f.endsWith('.json')) slots.add(decodeURIComponent(f.slice(0, -5)));
           }
-        } catch { /* no state dir yet — nothing saved */ }
+        } catch { /* no state dir yet - nothing saved */ }
       }
       return Array.from(slots).map(slot => ({ slot })) as StateEntry[];
     },
@@ -545,10 +545,10 @@ export async function createCliBridge(
 
   // The clipboard keeps throwing (shelling out to pbcopy/xclip is a non-goal), but the
   // throw is now CLASSIFIED: exit 3, "impossible in this installation", naming the way
-  // out. It is not a bug and it is not a usage error (contract §4.4).
+  // out. It is not a bug and it is not a usage error (contract section 4.4).
   const noClipboard = (): never => {
     throw unavailableHere(
-      'The clipboard is not available in the CLI — write the result with --output=<path> (or --output=- for stdout) instead.',
+      'The clipboard is not available in the CLI - write the result with --output=<path> (or --output=- for stdout) instead.',
       'CAPABILITY_UNAVAILABLE',
     );
   };
@@ -612,7 +612,7 @@ function rootSvgOf(node: Element | null): Element | null {
       if (format === 'svg' || format === 'svgz') {
         const svg = rootSvgOf(node);
         if (!svg) {
-          throw new Error('SVG export requires the template\'s root drawable to be an <svg> (HTML-layout tools need a browser engine — use the desktop app or the web shell)');
+          throw new Error('SVG export requires the template\'s root drawable to be an <svg> (HTML-layout tools need a browser engine - use the desktop app or the web shell)');
         }
         // Honour requested dimensions (incl. physical units like "210mm"): set
         // width/height in the unit and ensure a px viewBox so it scales.
@@ -627,7 +627,7 @@ function rootSvgOf(node: Element | null): Element | null {
           if (dw) svg.setAttribute('width', toCssLength(dw));
           if (dh) svg.setAttribute('height', toCssLength(dh));
         }
-        // TEXT AS PATHS (contract §6a). Every other vector format this shell writes
+        // TEXT AS PATHS (contract section 6a). Every other vector format this shell writes
         // (emf/eps/dxf) already outlines through the same host.text; svg kept live
         // <text>, so a recipient without the font silently got a different design.
         // `--text=live` (opts.text) is the documented opt-out for anyone who wants an
@@ -660,7 +660,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // run whose family resolves to an sfnt on disk (e.g. the platform SUSE
         // face); an unresolvable family throws (the always-text-as-paths guard).
         const svg = rootSvgOf(node);
-        if (!svg) throw new Error('EMF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        if (!svg) throw new Error('EMF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background });
         const bytes = emitEmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         return new Blob([bytes as BlobPart], { type: 'image/emf' });
@@ -679,7 +679,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // nothing in the file saying so. A finish now resolves to
         // FINISH_MASK_CMYK here exactly as it does in the browser.
         const svg = rootSvgOf(node);
-        if (!svg) throw new Error('EPS export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        if (!svg) throw new Error('EPS export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'EPS' });
         const text = emitEps(ir, {
           width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi,
@@ -694,7 +694,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // native-<svg> tool exports vector CAD DXF browser-free (no 150MB Chromium for
         // what is fundamentally text). Text is outlined upstream (host.text present).
         const svg = rootSvgOf(node);
-        if (!svg) throw new Error('DXF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        if (!svg) throw new Error('DXF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'DXF' });
         const { text } = emitDxf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         return new Blob([text], { type: 'image/vnd.dxf' });
@@ -706,14 +706,14 @@ function rootSvgOf(node: Element | null): Element | null {
         // metadata flag is accepted for call-site symmetry but is a no-op: WMF has
         // no comment record to carry a source URL.
         const svg = rootSvgOf(node);
-        if (!svg) throw new Error('WMF export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        if (!svg) throw new Error('WMF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'WMF' });
         const bytes = emitWmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         return new Blob([bytes as BlobPart], { type: 'image/wmf' });
       }
       if (format === 'exr' || format === 'hdr') {
-        // The pro float formats (plans/61-deeprichpixels.md §6 B3, surfaced CLI-first per
-        // §10 item 4): the engine's own OpenEXR / Radiance writers over a resvg raster
+        // The pro float formats (plans/61-deeprichpixels.md section 6 B3, surfaced CLI-first per
+        // section 10 item 4): the engine's own OpenEXR / Radiance writers over a resvg raster
         // of THIS tool's SVG. Browser-free, so they belong on this side of the tier
         // split rather than in raster.ts's Tier B.
         //
@@ -723,7 +723,7 @@ function rootSvgOf(node: Element | null): Element | null {
         //   1. no root <svg> → this tool needs layout, which jsdom cannot do;
         //   2. no `hdr=` → the raster is 8-bit sRGB and float would be padding.
         const svg = rootSvgOf(node);
-        if (!svg) throw new Error('EXR/HDR export needs the template\'s root drawable to be a vector image (HTML-layout tools have no browser-free raster here — use the desktop app or the web shell)');
+        if (!svg) throw new Error('EXR/HDR export needs the template\'s root drawable to be a vector image (HTML-layout tools have no browser-free raster here - use the desktop app or the web shell)');
         const raw = w.XMLSerializer ? new w.XMLSerializer().serializeToString(svg) : svg.outerHTML;
         // Lazy: pulls in resvg (a native module) and the engine's EXR/Radiance writers
         // only when a pro format is actually asked for.
@@ -754,7 +754,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // C2PA manifest, so the in-pixel mark is its only provenance); --imprint=0
         // resolves opts.imprint to false and it is skipped.
         const svg = rootSvgOf(node);
-        if (!svg) throw new Error('BMP export requires an <svg> in the template (HTML-layout tools need a browser engine — use the desktop app)');
+        if (!svg) throw new Error('BMP export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
         const raw = w.XMLSerializer ? new w.XMLSerializer().serializeToString(svg) : svg.outerHTML;
         const { rasterizeSvgToBmp } = await import('../../../packages/node-shell/src/raster.ts');
         const dpi = opts.dpi ?? 300;
@@ -774,10 +774,10 @@ function rootSvgOf(node: Element | null): Element | null {
       // drifted, so the message offered formats the engine no longer claims and omitted
       // `md`, which works. A remedy a reader cannot act on is worse than no remedy.
       const { NODE_FORMATS } = await import('../../../packages/node-shell/src/raster.ts');
-      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use one of the browser-free formats (${NODE_FORMATS.join(', ')}), a pro float format (exr, hdr — with hdr=1), install the render tier with \`lolly install-browser\`, or run the Tauri-bundled CLI for raster/pdf/zip.`);
+      throw new Error(`CLI shell does not support format "${format}" (needs a browser engine). Use one of the browser-free formats (${NODE_FORMATS.join(', ')}), a pro float format (exr, hdr - with hdr=1), install the render tier with \`lolly install-browser\`, or run the Tauri-bundled CLI for raster/pdf/zip.`);
     },
     async download() {
-      throw new Error('CLI cannot trigger a browser download — pipe the blob to a file via --output');
+      throw new Error('CLI cannot trigger a browser download - pipe the blob to a file via --output');
     },
     // Transform-path delivery has no browser download in the CLI; the runner
     // (run.js) writes the exportFile bytes to --output / stdout directly. This
@@ -850,7 +850,7 @@ function rootSvgOf(node: Element | null): Element | null {
       try {
         const { resolveSigningIdentity } = await import('@lolly-tools/node-shell/signing-identity');
         identity = await resolveSigningIdentity({});
-      } catch { /* no identity configured — ephemeral */ }
+      } catch { /* no identity configured - ephemeral */ }
       return await embedC2pa(bytes, format, {
         title: opts.title || 'Embed, Imprint & Track',
         claimGenerator: 'Lolly lolly.tools',
@@ -893,7 +893,7 @@ function rootSvgOf(node: Element | null): Element | null {
       const el = w.document.createElement('div');
       el.innerHTML = childRuntime.getHydrated();
       // Compose children get the same brand vars as the top-level canvas
-      // (plans/archive/brand-token-contract.md §3 injection rules). For html-format
+      // (plans/archive/brand-token-contract.md section 3 injection rules). For html-format
       // children the wrapper div (with its inline vars) is what's serialised;
       // the svg serialiser excludes the wrapper root, so standalone svg
       // children still rely on their var() fallbacks (accepted class).
@@ -968,7 +968,7 @@ function rootSvgOf(node: Element | null): Element | null {
 }
 
 // The seven semantic colour slots → namespaced CSS custom properties on the
-// canvas root (plans/archive/brand-token-contract.md §3): `--brand-primary` …
+// canvas root (plans/archive/brand-token-contract.md section 3): `--brand-primary` …
 // `--brand-edge`. Reserved --brand-font/--brand-font-text are NOT set yet
 // (font rung is a later pass).
 const BRAND_VAR_SLOTS = ['primary', 'on-primary', 'secondary', 'surface', 'text', 'muted', 'edge'] as const;
@@ -991,7 +991,7 @@ export async function applyBrandVars(el: HTMLElement, host: HostV1): Promise<voi
     try { value = await host.tokens.resolve(`{color.semantic.${slot}}`); } catch { continue; }
     // A string passes through as resolved (oklch()/hex are both valid CSS) - 
     // unless it is alias residue: a `{path}` that never resolved is a missing
-    // slot, not a colour (contract §3), so it sets nothing. Any structured
+    // slot, not a colour (contract section 3), so it sets nothing. Any structured
     // DTCG colour form is normalised to hex by the engine.
     const css = typeof value === 'string' && value
       ? (isAlias(value) ? null : value)
@@ -1044,7 +1044,7 @@ function mimeFor(format: string): string {
     case 'emf': return 'image/emf';
     case 'wmf': return 'image/wmf';
     case 'eps': case 'eps-cmyk': return 'application/postscript';
-    // Pro float formats (plans/61-deeprichpixels.md §6 B3). `image/x-exr` is the de-facto
+    // Pro float formats (plans/61-deeprichpixels.md section 6 B3). `image/x-exr` is the de-facto
     // OpenEXR type (never IANA-registered); `image/vnd.radiance` IS registered for RGBE.
     case 'exr': return 'image/x-exr';
     case 'hdr': return 'image/vnd.radiance';

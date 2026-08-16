@@ -8,8 +8,8 @@
  * browser only once the render has failed. This is the same information up front.
  *
  * It is reported INSIDE the `list --json` envelope's `result.environment` rather than
- * as a new `lolly capabilities` command. The contract freezes the command list (§1.1)
- * and explicitly allows keys to be added inside `result` (§5.2); `list` is already the
+ * as a new `lolly capabilities` command. The contract freezes the command list (section 1.1)
+ * and explicitly allows keys to be added inside `result` (section 5.2); `list` is already the
  * discovery call, so the facts about the runner ride along with the facts about the
  * tools and an agent needs one call, not two.
  *
@@ -68,7 +68,7 @@ function resolvable(spec: string): boolean {
   }
 }
 
-/** The env vars from the contract's frozen set (§1.5) that are actually set here. */
+/** The env vars from the contract's frozen set (section 1.5) that are actually set here. */
 const REPORTED_ENV = [
   'LOLLY_ROOT', 'LOLLY_TRUST_ANCHOR', 'LOLLY_BROWSER_PATH', 'LOLLY_BROWSER_CHANNEL',
   'PLAYWRIGHT_BROWSERS_PATH', 'LOLLY_WEB_BASE', 'LOLLY_WEB_DIST', 'LOLLY_VIDEO_CAPTURE',
@@ -116,7 +116,7 @@ export async function describeEnvironment(): Promise<EnvironmentReport> {
       },
       images: hasSharp
         ? { available: true, engine: 'sharp' }
-        : { available: false, reason: 'sharp is not installed — host.images is unavailable' },
+        : { available: false, reason: 'sharp is not installed - host.images is unavailable' },
     },
     env,
   };

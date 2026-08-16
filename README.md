@@ -103,4 +103,4 @@ git clone --recurse-submodules https://github.com/lolly-tools/lolly.git
 git submodule update --init --recursive
 ```
 
-Commit changes to files in this directory in the `lolly-cli` repo, then commit the moved pointer in the umbrella. See [`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4.
+Commit changes to files in this directory in the `lolly-cli` repo, then commit the moved pointer in the umbrella. See [`CONTRIBUTING.md`](../../CONTRIBUTING.md) section 4.

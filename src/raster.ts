@@ -50,7 +50,7 @@ export async function renderRaster(opts: {
   // TrustMark) request still falls through - that encoder is a browser feature.
   //
   // The pixel-watermark (imprint) used to fall through too, and that stopped being
-  // acceptable the moment the Imprint became default-on for CLI renders (contract §12
+  // acceptable the moment the Imprint became default-on for CLI renders (contract section 12
   // O2): every `--export=png` would have demanded the scoped Chromium for a mark the
   // caller never asked for. It is embedded HERE instead, browser-free, through the
   // engine's own DOM-free watermark maths (rasterizeSvgToImprintedPng). A frame below

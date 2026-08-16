@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The CLI's output discipline (plans/73-cli-ga-contract.md §5.3 and §1.2).
+ * The CLI's output discipline (plans/73-cli-ga-contract.md section 5.3 and section 1.2).
  *
  * TWO rules, both frozen at GA:
  *
@@ -120,7 +120,7 @@ function inspectish(v: unknown): string {
   try { return JSON.stringify(v) ?? String(v); } catch { return String(v); }
 }
 
-/** True when ANSI should be used: a TTY, and NO_COLOR unset (contract §1.5). */
+/** True when ANSI should be used: a TTY, and NO_COLOR unset (contract section 1.5). */
 export function useColor(stream: { isTTY?: boolean } = process.stdout): boolean {
   return Boolean(stream.isTTY) && !process.env.NO_COLOR;
 }

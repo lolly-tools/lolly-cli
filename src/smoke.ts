@@ -71,7 +71,7 @@ export function skipReason(manifest: SmokeManifest, forcedFormat?: string): stri
     return 'transform tool (file in → bytes out; nothing to render at defaults)';
   }
   const caps = (manifest.capabilities ?? []).filter(c => LIVE_CAPTURE_CAPS.includes(c));
-  if (caps.length) return `needs ${caps.join('+')} — no headless support`;
+  if (caps.length) return `needs ${caps.join('+')} - no headless support`;
   if (forcedFormat && !manifest.render.formats.some(f => f.toLowerCase() === forcedFormat.toLowerCase())) {
     return `does not declare "${forcedFormat}"`;
   }
@@ -85,7 +85,7 @@ interface SmokeArgs {
   format?: string;
   /** Row/summary sink (stdout by default) - injectable so tests don't garble TAP. */
   out?: (line: string) => void;
-  /** --json: the §5.2 envelope on stdout; the progress table moves to stderr. */
+  /** --json: the section 5.2 envelope on stdout; the progress table moves to stderr. */
   json?: boolean;
 }
 
@@ -118,7 +118,7 @@ export async function smokeCli({ only, format, out, json = false }: SmokeArgs = 
   };
 
   if (format && !NODE_FORMATS.includes(format.toLowerCase())) {
-    return fail(`smoke is browser-free — --format must be one of: ${NODE_FORMATS.join(', ')}\n`, 'BAD_FLAG_VALUE');
+    return fail(`smoke is browser-free - --format must be one of: ${NODE_FORMATS.join(', ')}\n`, 'BAD_FLAG_VALUE');
   }
 
   const index = JSON.parse(await readFile(join(REPO_ROOT, 'catalog', 'tools', 'index.json'), 'utf8')) as {
@@ -151,7 +151,7 @@ export async function smokeCli({ only, format, out, json = false }: SmokeArgs = 
     if (reason) {
       skipped++;
       records.push({ id, outcome: 'skipped', reason });
-      print(`– ${id.padEnd(idWidth)} ${'—'.padEnd(9)} skipped: ${reason}\n`);
+      print(`– ${id.padEnd(idWidth)} ${'-'.padEnd(9)} skipped: ${reason}\n`);
       continue;
     }
 
@@ -170,7 +170,7 @@ export async function smokeCli({ only, format, out, json = false }: SmokeArgs = 
         // Lazy import: runToolCli drags in jsdom + the full bridge; a --format typo or
         // an all-skipped run shouldn't pay for it.
         const { runToolCli } = await import('./run.ts');
-        // PROVENANCE OFF, deliberately (contract §12 O2). A render carries Content
+        // PROVENANCE OFF, deliberately (contract section 12 O2). A render carries Content
         // Credentials and the Imprint by default, and both embed a fresh timestamp:
         // smoke is a CI gate that renders the whole catalog and compares nothing but
         // "did bytes arrive", so signing every one of them would buy nothing, cost a
@@ -234,7 +234,7 @@ export async function smokeCli({ only, format, out, json = false }: SmokeArgs = 
   const elapsed = Date.now() - started;
   print(
     `\nsmoke: ${ok} ✓  ${failed} ✗  ${layout} ~ (layout tools rendered as html)  ${skipped} skipped  ` +
-    `(${ids.length} tools, ${(elapsed / 1000).toFixed(1)}s) — outputs in ${outDir}\n`,
+    `(${ids.length} tools, ${(elapsed / 1000).toFixed(1)}s) - outputs in ${outDir}\n`,
   );
   const exit = failed ? 1 : 0;
   if (json) {

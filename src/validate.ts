@@ -24,7 +24,7 @@
  * to a pinned root reports the CA-verified identity instead of the default
  * signingCredential.untrusted.
  *
- * TRUST ANCHORS, DECIDED (plans/73-cli-ga-contract.md §12 O1, Andy 2026-08-01):
+ * TRUST ANCHORS, DECIDED (plans/73-cli-ga-contract.md section 12 O1, Andy 2026-08-01):
  * the default set is the Lolly CA root + the vendored C2PA known-certificate
  * list + whatever `--trust-anchor` / `$LOLLY_TRUST_ANCHOR` pins. The Lolly root
  * used to be excluded here, so a Lolly-CA-signed export that read "Verified" on
@@ -36,7 +36,7 @@
  * verdict, in the same words the TUI's verdict panel uses, because "verified"
  * is only meaningful beside "verified by what".
  *
- * EXIT CODES (plans/73-cli-ga-contract.md §6b) - derived from the engine's shared verdict
+ * EXIT CODES (plans/73-cli-ga-contract.md section 6b) - derived from the engine's shared verdict
  * ladder (resolveVerdict), NOT from the raw report.state this file used to branch on:
  *
  *   valid / expired          → 0   the file matches what was signed
@@ -63,7 +63,7 @@ import { EXIT, usageError } from './exit-codes.ts';
 import { useColor } from './output.ts';
 
 const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', BOLD = '\x1b[1m', YELLOW = '\x1b[33m', RESET = '\x1b[0m';
-// NO_COLOR is honoured in addition to the isTTY check (contract §1.5).
+// NO_COLOR is honoured in addition to the isTTY check (contract section 1.5).
 const tty = useColor(process.stdout);
 const paint = (code: string, s: string) => (tty ? code + s + RESET : s);
 
@@ -84,7 +84,7 @@ export interface ValidateOpts {
   trustAnchors?: string[];
   /**
    * --no-default-anchors: verify against the pinned roots ALONE (no Lolly CA root,
-   * no vendored C2PA list). Default true = the §12 O1 anchor set.
+   * no vendored C2PA list). Default true = the section 12 O1 anchor set.
    */
   defaultAnchors?: boolean;
   /** `credential` (default) = the verdict IS the exit code; `none` = report only. */
@@ -92,7 +92,7 @@ export interface ValidateOpts {
   /** --strict: an expired credential becomes a refusal. */
   strict?: boolean;
   /**
-   * --metadata: add the file report (contract §6b) - embedded metadata, PDF structure,
+   * --metadata: add the file report (contract section 6b) - embedded metadata, PDF structure,
    * and the failed-redaction pass. Implemented by @lolly-tools/node-shell/inspect, the
    * one implementation the TUI and MCP consume too.
    */
@@ -120,7 +120,7 @@ export async function validateFilesCli(files: string[], opts: ValidateOpts = {})
   }
   if (opts.json) {
     // ONE document for the whole invocation, whatever the file count. The per-file
-    // record keeps the §5.2 shape ({ verdict, resolved, report, metadata }); wrapping it
+    // record keeps the section 5.2 shape ({ verdict, resolved, report, metadata }); wrapping it
     // in `files[]` even for a single file means a consumer never branches on arity.
     const { emitResult } = await import('./envelope.ts');
     await emitResult({ files: records }, worst);
@@ -159,7 +159,7 @@ export async function validateFile(
   // used to re-scan process.argv, because the old flag parser kept only the last
   // occurrence - a second parser is a second set of rules waiting to disagree).
   // $LOLLY_TRUST_ANCHOR adds `path.delimiter`-separated paths, honoured by the CLI and
-  // the TUI alike (contract §1.5/§4.7): flag first, then environment. The splitting and
+  // the TUI alike (contract section 1.5/section 4.7): flag first, then environment. The splitting and
   // `~` rules come from @lolly-tools/node-shell/trust-anchors so the two shells cannot
   // disagree - this file used to hard-code `':'`, which splits a Windows `C:\…\root.pem`
   // at the drive letter and then reports two unreadable anchors.
@@ -167,7 +167,7 @@ export async function validateFile(
   const anchorPaths = [...(trustAnchors ?? []), ...fromEnv];
   // The Lolly CA root + the vendored C2PA trust list (Google/Gemini, camera makers, …)
   // plus any --trust-anchor=<root.pem> the caller pins - the SAME set the web /valid
-  // view uses, decided in contract §12 O1. `--no-default-anchors` drops both built-in
+  // view uses, decided in contract section 12 O1. `--no-default-anchors` drops both built-in
   // sets, leaving only what was pinned (possibly nothing, which is the bare-trust
   // check: every signer reads untrusted by construction).
   const extra: string[] = [];
@@ -195,7 +195,7 @@ export async function validateFile(
       bytes = new Uint8Array(await readFile(filePath));
     }
   } catch (e) {
-    const message = `cannot read "${filePath}" — ${(e as Error).message}`;
+    const message = `cannot read "${filePath}" - ${(e as Error).message}`;
     process.stderr.write(`Error: ${message}\n`);
     // Under --json the unreadable file is still a RECORD, not a silence: a batch of ten
     // files must not lose the other nine because one path was typo'd.
@@ -206,7 +206,7 @@ export async function validateFile(
   }
   const report = await verifyC2pa(bytes, { trustAnchors: anchors });
 
-  // --metadata: the file report (contract §6b) - "what else is in this file", on top of
+  // --metadata: the file report (contract section 6b) - "what else is in this file", on top of
   // "is the credential intact". One implementation, in @lolly-tools/node-shell/inspect,
   // so this command, the TUI and MCP cannot drift the way the verdict ladder did.
   // The already-verified `report` is NOT passed in: the credential is rendered above by
@@ -245,7 +245,7 @@ export async function validateFile(
     : requireMode === 'none' ? EXIT.OK : verdictExit(resolvedState(report).state, strict);
 
   if (json) {
-    // The §5.2 result shape, aligned with the MCP twin (services/mcp/src/tools.ts) so
+    // The section 5.2 result shape, aligned with the MCP twin (services/mcp/src/tools.ts) so
     // one question has one answer shape across both machine surfaces:
     //   verdict - the legacy slug ('made-with-lolly', 'no-credential', …)
     //   resolved - the engine's semantic verdict (state + tone + the flags behind it)
@@ -253,7 +253,7 @@ export async function validateFile(
     //   metadata - the file report, when --metadata ran; null when it did not, and
     //              never a fabricated empty object, because "not examined" and "nothing
     //              found" are different answers.
-    //   anchors - WHICH trust anchors produced `resolved.trusted` (contract §12 O1).
+    //   anchors - WHICH trust anchors produced `resolved.trusted` (contract section 12 O1).
     //              Additive key under schemaVersion 1; consumers ignore what they
     //              do not know.
     const resolved = resolvedState(report);
@@ -283,7 +283,7 @@ export async function validateFile(
     //    has one): 'trusted' renders as "Credential intact", identity in facts.
     const v = resolvedState(report);
     const h = verdictHeadline(v, { elevateParts: true });
-    const headline = paint(TONE_ANSI[h.tone], `${h.glyph} ${h.name}`) + (h.detail ? paint(DIM, ` — ${h.detail}`) : '');
+    const headline = paint(TONE_ANSI[h.tone], `${h.glyph} ${h.name}`) + (h.detail ? paint(DIM, ` - ${h.detail}`) : '');
     process.stdout.write(`${paint(BOLD, filePath)}${report.format ? paint(DIM, `  [${report.format}]`) : ''}\n${headline}\n`);
     if (report.reason && report.state !== 'invalid') process.stdout.write(paint(DIM, `  ${clean(report.reason)}\n`));
     if (report.claim && !report.madeWithLolly) {
@@ -295,7 +295,7 @@ export async function validateFile(
     for (const [k, val] of verdictFacts(report)) process.stdout.write(`  ${paint(DIM, k.padEnd(11))} ${val}\n`);
     for (const chk of verdictChecks(report)) {
       const mark = chk.mark === 'ok' ? paint(GREEN, '✓') : chk.mark === 'info' ? paint(DIM, 'ℹ') : paint(RED, '✕');
-      process.stdout.write(`  ${mark} ${chk.code} ${paint(DIM, '— ' + chk.explanation)}\n`);
+      process.stdout.write(`  ${mark} ${chk.code} ${paint(DIM, ' - ' + chk.explanation)}\n`);
     }
     // WHICH anchor set produced that verdict. Printed for every file that was read,
     // including the no-credential case: "nothing vouches for this signer" and "you
@@ -304,15 +304,15 @@ export async function validateFile(
       process.stdout.write(paint(DIM, `  ${describeAnchorSet(anchorFacts)}\n`));
     }
     if (deepErr) {
-      process.stdout.write(paint(YELLOW, `! Deep scan unavailable`) + paint(DIM, ` — ${clean(deepErr)}\n`));
+      process.stdout.write(paint(YELLOW, `! Deep scan unavailable`) + paint(DIM, ` - ${clean(deepErr)}\n`));
     } else if (deepScan) {
       if (!deepScan.scanned) {
         process.stdout.write(paint(DIM, `○ Deep scan: this file type can't be pixel-scanned (raster/video only)\n`));
       } else if (deepScan.lollyDurable) {
         process.stdout.write(paint(GREEN, '✦ Lolly durable mark decoded from the pixels') + paint(DIM,
-          ' — a TrustMark-format identifier that survives metadata stripping and re-encoding\n'));
+          ' - a TrustMark-format identifier that survives metadata stripping and re-encoding\n'));
       } else {
-        if (deepScan.trustmark) process.stdout.write(paint(YELLOW, '~ Adobe TrustMark watermark decoded') + paint(DIM, ' — embedded by another TrustMark-aware tool\n'));
+        if (deepScan.trustmark) process.stdout.write(paint(YELLOW, '~ Adobe TrustMark watermark decoded') + paint(DIM, ' - embedded by another TrustMark-aware tool\n'));
         if (deepScan.contentSeal) process.stdout.write(paint(YELLOW, '~ Meta Content Seal watermark decoded\n'));
         if (!deepScan.trustmark && !deepScan.contentSeal) {
           process.stdout.write(paint(DIM, '○ Deep scan: no pixel watermark decoded (not proof of absence)\n'));
@@ -332,7 +332,7 @@ export async function validateFile(
   //
   // --strict + --metadata: a share risk the inspection FOUND (text present but not
   // visible, a GPS fix, undeclared bytes appended past the container) is a warning in
-  // the normal reading and a refusal under --strict, which is exactly what §1.2 says
+  // the normal reading and a refusal under --strict, which is exactly what section 1.2 says
   // --strict does. It cannot fire without --metadata, because without it the pass never
   // ran and the CLI must not imply a check it did not perform. `exit` above already
   // applied all three rules; this return is the human path's use of the same number.
@@ -345,7 +345,7 @@ function resolvedState(report: Parameters<typeof resolveVerdict>[0]): ReturnType
 }
 
 /**
- * Resolved verdict → exit code (contract §6b).
+ * Resolved verdict → exit code (contract section 6b).
  *
  * `expired` is 0 by design: Lolly signs with ephemeral on-device certificates of
  * 7/30/90/365 days, and the engine already softens expiry to a `warn` tone. Any other
