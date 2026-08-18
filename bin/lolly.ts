@@ -76,7 +76,8 @@ Export options:
                            tool, whichever one its manifest happens to declare)
   --filename=<name>        name the output file in the working directory (no --output)
   --width= --height=       size, in --unit= (px default, or mm/cm/in/pt) at --dpi= (300)
-  --text=outline|live      vector text as paths (default) or editable <text>
+  --text=outline|live      vector text as paths or editable text. svg defaults to
+                           outline; emf defaults to live (editable in Office/Slides)
   --input.<id>=<value>     set a tool input whose name collides with a reserved flag
   --html-fallback          OPT IN: if the requested format cannot be produced here, write
                            HTML under a .html name instead of failing. Off by default - 

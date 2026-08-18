@@ -134,7 +134,10 @@ interface CliExportRenderOpts extends ExportOpts {
    *  export.ts's ExportOpts), so this is the CLI's local extension of the same shape,
    *  in url-mode's 0–100 author dial units. Absent ⇒ SDR ⇒ exr/hdr refuse. */
   hdr?: { targets?: readonly string[]; peakNits?: number; reach?: number; lift?: number; richness?: number } | null;
-  /** `--text=outline|live` (contract section 1.3). Default outline; 'live' keeps `<text>`. */
+  /** `--text=outline|live` (contract section 1.3). svg defaults to outline and
+   *  'live' keeps `<text>`; emf defaults to LIVE (editable GDI text records,
+   *  per-run outline fallback) and 'outline' forces paths. wmf/eps/dxf are
+   *  always outlined regardless. */
   text?: 'outline' | 'live';
   /** Reported once per run that could not be outlined, so the runner can warn (and
    *  refuse under --strict) instead of the bridge writing to stderr itself. */
@@ -655,15 +658,20 @@ function rootSvgOf(node: Element | null): Element | null {
       }
       if (format === 'emf') {
         // EMF is pure bytes built from SVG primitives - no rasteriser needed, so
-        // it joins svg as a CLI-native format for native-<svg> tools. Live <text>
-        // is outlined in the walk: host.text (createNodeTextAPI above) shapes any
-        // run whose family resolves to an sfnt on disk (e.g. the platform SUSE
-        // face); an unresolvable family throws (the always-text-as-paths guard).
+        // it joins svg as a CLI-native format for native-<svg> tools. Text default
+        // INVERTS the other vector formats' (contract section 6a note): a plain
+        // <text> run stays LIVE - a real GDI font + string record, editable in
+        // Office / Google Drawings, no host.text needed - and only runs GDI text
+        // can't express (tracking, features, stroke, skew) are outlined via
+        // host.text (createNodeTextAPI above), where an unresolvable family still
+        // throws. `--text=outline` forces the old always-text-as-paths output.
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('EMF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
-        const ir = await svgDomToIr(svg, { host, background: opts.background });
+        const ir = await svgDomToIr(svg, { host, background: opts.background, textMode: opts.text === 'outline' ? 'outline' : 'live' });
         const bytes = emitEmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
-        return new Blob([bytes as BlobPart], { type: 'image/emf' });
+        // application/x-msmetafile, not RFC 7903 image/emf - Google Drive only
+        // opens metafiles in Google Drawings/Slides under the legacy type.
+        return new Blob([bytes as BlobPart], { type: 'application/x-msmetafile' });
       }
       if (format === 'eps' || format === 'eps-cmyk') {
         // EPS is vector PostScript built from the same SVG IR as EMF - text is
@@ -709,7 +717,9 @@ function rootSvgOf(node: Element | null): Element | null {
         if (!svg) throw new Error('WMF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
         const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'WMF' });
         const bytes = emitWmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
-        return new Blob([bytes as BlobPart], { type: 'image/wmf' });
+        // Same legacy metafile type as EMF above - Drive's Drawings import
+        // matches application/x-msmetafile for WMF too.
+        return new Blob([bytes as BlobPart], { type: 'application/x-msmetafile' });
       }
       if (format === 'exr' || format === 'hdr') {
         // The pro float formats (plans/61-deeprichpixels.md section 6 B3, surfaced CLI-first per
@@ -1041,8 +1051,9 @@ function mimeFor(format: string): string {
     case 'jpg': case 'jpeg': return 'image/jpeg';
     case 'webp': return 'image/webp';
     case 'bmp': return 'image/bmp';
-    case 'emf': return 'image/emf';
-    case 'wmf': return 'image/wmf';
+    // Legacy Windows-metafile type rather than RFC 7903 image/emf|image/wmf:
+    // it's the only MIME Google Drive opens in Google Drawings/Slides.
+    case 'emf': case 'wmf': return 'application/x-msmetafile';
     case 'eps': case 'eps-cmyk': return 'application/postscript';
     // Pro float formats (plans/61-deeprichpixels.md section 6 B3). `image/x-exr` is the de-facto
     // OpenEXR type (never IANA-registered); `image/vnd.radiance` IS registered for RGBE.

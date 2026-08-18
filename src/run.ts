@@ -60,8 +60,11 @@ interface RunToolCliArgs {
    *  cannot be produced here. Off by default - silently substituting the format was
    *  the single worst defect in this shell (see the export section below). */
   htmlFallback?: boolean;
-  /** --text=outline|live (contract section 1.3/section 6a). Vector export outlines text by default;
-   *  'live' keeps editable `<text>` and accepts that the recipient needs the font. */
+  /** --text=outline|live (contract section 1.3/section 6a). svg outlines text by
+   *  default; 'live' keeps editable `<text>` and accepts that the recipient needs
+   *  the font. emf INVERTS the default: live GDI text records (editable in
+   *  Office / Google Drawings, per-run outline fallback), with `--text=outline`
+   *  forcing the old text-as-paths output. wmf/eps/dxf are always outlined. */
   text?: 'outline' | 'live';
 }
 
@@ -822,16 +825,18 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     }
     // --password= sets the standard PDF's open-password (basic lock).
     if (targetFormat === 'pdf' && password) exportOpts.password = password;
-    // Text as paths on vector export (contract section 6a). `--text=live` opts out; a run whose
-    // font this host cannot resolve keeps its live <text> and is reported here, once per
-    // run, so the person exporting knows which words a recipient may see in a different
-    // face. Under --strict the fallback is a refusal (exit 4), because a strict pipeline
-    // asked for "outlined or nothing".
-    if (text === 'live') {
-      exportOpts.text = 'live';
-      // EMF/EPS/DXF have no live-text representation at all - the emitters write
+    // Text as paths on vector export (contract section 6a). For svg, `--text=live`
+    // opts out; a run whose font this host cannot resolve keeps its live <text> and
+    // is reported here, once per run, so the person exporting knows which words a
+    // recipient may see in a different face. Under --strict the fallback is a
+    // refusal (exit 4), because a strict pipeline asked for "outlined or nothing".
+    // emf INVERTS the default (live GDI text records since engine 1.128), so BOTH
+    // values must be forwarded - `--text=outline` is emf's opt-out, not a no-op.
+    if (text) {
+      exportOpts.text = text;
+      // WMF/EPS/DXF have no live-text representation at all - those emitters write
       // outlines or nothing. Say so rather than accept a flag that cannot apply.
-      if (['emf', 'eps', 'eps-cmyk', 'dxf'].includes(targetFormat.toLowerCase())) {
+      if (text === 'live' && ['wmf', 'eps', 'eps-cmyk', 'dxf'].includes(targetFormat.toLowerCase())) {
         warn('TEXT_LIVE_IGNORED', `--text=live cannot apply to "${targetFormat}": the format carries no text, only geometry. Text was outlined.`);
       }
     }
@@ -974,10 +979,17 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     // through a URL, where there is no reserved param for it (see RESERVED in
     // engine/src/url-mode.ts). A run that escalated therefore came back outlined while
     // the caller had asked for editable <text>, byte-identical to a run without the flag.
-    // Say so rather than let the flag look honoured.
-    if (text === 'live' && webShellExport) {
+    // Say so rather than let the flag look honoured. The browser tier follows the
+    // WEB defaults and `--text` does not travel to it: svg comes back outlined
+    // (so an explicit `live` did not apply), and emf comes back LIVE since engine
+    // 1.128 (so an explicit `outline` did not apply). Warn on exactly the
+    // combination whose flag the produced file contradicts.
+    if (webShellExport && text && (
+      (text === 'live' && targetFormat.toLowerCase() !== 'emf') ||
+      (text === 'outline' && targetFormat.toLowerCase() === 'emf'))) {
       warn('TEXT_LIVE_IGNORED',
-        `--text=live did not apply: "${targetFormat}" for this tool was produced by the browser render tier, which outlines text unconditionally. ` +
+        `--text=${text} did not apply: "${targetFormat}" for this tool was produced by the browser render tier, ` +
+        `which follows the web default (${targetFormat.toLowerCase() === 'emf' ? 'live text records' : 'outlined text'}). ` +
         'The file is the same as one exported without the flag.');
     }
 
