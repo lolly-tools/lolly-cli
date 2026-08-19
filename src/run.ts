@@ -11,7 +11,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip, readXlsx, listXlsxSheets, rowsToCsv } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, frameFilterApplies, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip, readXlsx, listXlsxSheets, rowsToCsv } from '@lolly/engine';
 import { createHash } from 'node:crypto';
 import type { Lang } from '@lolly/engine';
 import type { InputValue } from '../../../engine/src/inputs.ts';
@@ -34,6 +34,9 @@ import { cleanControlChars } from '@lolly-tools/node-shell/verdict-report';
 // url-shot: capture a live page via the scoped Chromium (shared with the TUI).
 import { captureUrl, captureParamsFrom } from '@lolly-tools/node-shell/url-capture';
 import { createCliBridge, applyBrandVars, CLI_CAPABILITIES } from './bridge.ts';
+// The `s=` still-export frame filter (plan 112 section 10) - the engine resolves the
+// address, this reads the rendered pages. Same meaning as the web shell's fan-out.
+import { pickFramePage } from './frame-page.ts';
 import { isOn } from './args.ts';
 import type { Profile, ExportOpts } from '@lolly-tools/core/host-v1';
 import { note, warn, writeOut, isStrict } from './output.ts';
@@ -247,7 +250,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // different transport, so a packed share link must run identically here
   // (`lolly design --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(rawQuery);
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam, designVersion: designvParam } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam, designVersion: designvParam, slide } = parseUrlState(
     query,
     tool.manifest,
   );
@@ -792,6 +795,43 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     const u = unit || 'px';
     const qual = (v: number | null | undefined): string | number | undefined => (typeof v === 'number' && v > 0 ? (u !== 'px' ? `${v}${u}` : v) : undefined);
     const exportOpts: CliExportOpts = { width: qual(width), height: qual(height) };
+
+    // ── the `s=` still-export filter (plan 112 section 10) ────────────────────────────
+    // `--s=2 --export=png` renders ONE slide of a framed document, exactly as
+    // `?s=2&format=png` does in the web shell - same address grammar, same page, because
+    // both ask engine/src/frame-address.ts. The DOM-free and Tier-A paths export the
+    // picked page node at its own authored size (the web fan-out's rule: each page at its
+    // own layout size, document dims stripped); Tier B forwards `s` in the web-shell URL
+    // below (dims.slide) and the browser applies the identical filter there.
+    //
+    // A format the filter cannot apply to is REPORTED, not obeyed and not refused: pdf /
+    // zip / pptx / html carry every slide by construction and the motion formats select a
+    // frame by TIME, so the honest outcome is the whole document - which is also what the
+    // web shell produces for the same link. An address that names nothing throws
+    // (pickFramePage) rather than writing the wrong artefact under the right name.
+    let exportNode: Element = canvas;
+    if (slide) {
+      if (!frameFilterApplies(targetFormat)) {
+        warn('SLIDE_FILTER_IGNORED',
+          `--s=${slide} names one slide, but "${targetFormat}" carries every slide in one file ` +
+          '(or is a motion format, where time selects the frame). The whole document was rendered.');
+      } else {
+        const picked = pickFramePage(canvas, slide);
+        if (picked) {
+          exportNode = picked.node;
+          // The page's own authored size wins unless the caller asked for a size - the
+          // document dims describe the whole board, not this slide. PIXELS only: the frame's
+          // authored w/h is a px number, so a run in a physical unit (`--unit=mm`, no
+          // width/height) must NOT have it re-labelled as 1080mm. There the manifest dims
+          // stand, as they did before this filter existed.
+          if (u === 'px') {
+            if (exportOpts.width === undefined && picked.width) exportOpts.width = picked.width;
+            if (exportOpts.height === undefined && picked.height) exportOpts.height = picked.height;
+          }
+          note(`Rendering slide ${picked.index + 1} of ${picked.total} (--s=${slide}).`);
+        }
+      }
+    }
     if (u !== 'px') exportOpts.dpi = dpi || 300;
     // --depth=8|16|float requests the export's bits per channel (--depth=auto, the
     // default, carries nothing). A request, not a promise: depth follows provenance,
@@ -867,6 +907,11 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       // The visible trade: the manifest's environment assertion is then the CLI's
       // (surface: 'cli'), not the web shell's. docs/cli-signing.md says so.
       c2pa: wantC2pa && !identity, c2paDays: c2pa?.days ?? undefined,
+      // The deck state address, forwarded so the BROWSER tier applies the same one-slide
+      // filter the web shell applies to `?s=`. Carried whenever it was given: a format the
+      // filter skips is skipped there too (frameFilterApplies is the shared rule), so this
+      // can never mean something different from the run that produced it.
+      ...(slide ? { slide } : {}),
     };
     const viaRaster = async (): Promise<Buffer> => {
       const { renderRaster } = await import('./raster.ts');
@@ -912,7 +957,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
         // web shell). `usedBrowser` tells us to tear the browser + server down before exit.
         const domFree = NODE_FORMATS.includes(targetFormat.toLowerCase());
         if (domFree) {
-          const blob = await runtime.export(canvas, targetFormat, exportOpts);
+          const blob = await runtime.export(exportNode, targetFormat, exportOpts);
           buf = Buffer.from(await blob.arrayBuffer());
           // The DOM-free render is this runtime's own output - a swallowed onInit failure
           // (e.g. an unavailable capability) yields an empty file. Refuse to write it.
@@ -1181,6 +1226,9 @@ const UNSUPPORTED_RESERVED: Record<string, string> = {
   options: 'the options panel is a GUI affordance',
   nostage: 'there is no stage chrome to suppress',
   _v: 'the CLI always runs the tool version on disk',
+  // Presentation mode (plan 112) is a view state of a fullscreen shell. `s`, its
+  // companion, IS honoured here - as the still-export slide filter - so it is not listed.
+  present: 'there is no fullscreen to present into; `--s=<slide>` still selects one slide of a render',
 };
 
 export function unsupportedReservedParams(params: Record<string, string>): string[] {

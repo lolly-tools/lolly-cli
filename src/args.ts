@@ -38,6 +38,10 @@ export const REPEATABLE = new Set(['trust-anchor']);
 export const VALUE_FLAGS = new Set([
   'output', 'export', 'format', 'width', 'height', 'unit', 'dpi', 'depth',
   'bleed', 'marks', 'cuts', 'lang', 'filename', 'slot', 'z', 'zx',
+  // `s` is the deck STATE ADDRESS (plan 112): `--s=2` / `--s=slide1` renders that one
+  // slide. A bare `--s` parsing to "1" would silently export slide one of a deck the
+  // caller never addressed - the exact class of guess this list exists to refuse.
+  's',
   // `designv` takes a published version's slug or `latest`. A bare form parsing to
   // "1" would name no version, fall silently through the resolution ladder, and
   // render against a different design system under the name the author asked for.

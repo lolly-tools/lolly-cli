@@ -17,6 +17,7 @@ import type { JSDOM } from 'jsdom';
 import { serializeUrlState } from '@lolly/engine';
 import { eligibleForResvgPng, rasterizeTierAPng } from '@lolly-tools/node-shell/raster';
 import type { RenderDims } from '@lolly-tools/node-shell/webshell-render';
+import { pickFramePage } from './frame-page.ts';
 
 interface Runtime {
   getHydrated(): string;
@@ -64,7 +65,7 @@ export async function renderRaster(opts: {
   // page geometry (PRINT_PREP_FORMATS), so this should be unreachable - it stays so the
   // silent no-op cannot come back if that allowlist ever widens.
   if (eligibleForResvgPng(fmt, dims)) {
-    const svg = await tryRenderSvg(runtime, dom);
+    const svg = await tryRenderSvg(runtime, dom, dims.slide);
     if (svg) {
       // Shared Tier-A rasteriser (node-shell): imprint + physical-unit DPI, identical to the
       // TUI. `imprinted` reflects whether the mark was actually embedded - the imprinted path
@@ -95,13 +96,25 @@ export async function renderRaster(opts: {
 /**
  * Render the runtime's current state to an SVG string, or null when this tool can't
  * produce SVG in a pure-Node shell (HTML-layout tools have no <svg> and need a browser).
+ *
+ * `slide` is url-mode's `s` (plan 112): this tier re-hydrates the canvas itself, so the
+ * one-slide filter run.ts applied to the DOM-free path has to be applied again here, or a
+ * `--s=2 --export=png` of an SVG-native paged tool would quietly rasterise every slide.
+ * An address that names nothing throws out of pickFramePage, as it does on the other path.
  */
-async function tryRenderSvg(runtime: Runtime, dom: JSDOM): Promise<string | null> {
+async function tryRenderSvg(runtime: Runtime, dom: JSDOM, slide?: string | null): Promise<string | null> {
+  const canvas = dom.window.document.getElementById('canvas');
+  if (!canvas) return null;
   try {
-    const canvas = dom.window.document.getElementById('canvas');
-    if (!canvas) return null;
     canvas.innerHTML = runtime.getHydrated();
-    const blob = await runtime.export(canvas, 'svg', {});
+  } catch {
+    return null;                      // as before: no SVG here, escalate to the browser tier
+  }
+  // OUTSIDE the try: a bad `--s=` is a usage error the caller must see, not a reason to
+  // fall through to the browser tier and render the whole document there.
+  const picked = pickFramePage(canvas, slide);
+  try {
+    const blob = await runtime.export(picked?.node ?? canvas, 'svg', {});
     return await blob.text();
   } catch {
     return null;
