@@ -59,6 +59,7 @@ import { captureUrl } from '../../../packages/node-shell/src/url-capture.ts';
 // it resolves sharp lazily and returns null when it isn't installed, so importing it is
 // free and a lean install simply leaves host.images undefined.
 import { createNodeImagesAPI } from '../../../packages/node-shell/src/images.ts';
+import { createNodeScanAPI } from '../../../packages/node-shell/src/scan.ts';
 // LOLLY_STATE_DIR resolution (shared with the TUI). RELATIVE for the MCP-bundle reason.
 import { resolveStateDir } from '../../../packages/node-shell/src/state-dir.ts';
 // Text-as-paths on the svg branch (contract section 6a). Local to this shell: it resolves
@@ -379,6 +380,12 @@ export async function createCliBridge(
   const images = createNodeImagesAPI();
   if (images) host.images = images;
 
+  // host.scan (v1.153, plans/162 Part 2) - on-device code reader via zxing-wasm.
+  // Gives the CLI `lolly scan photo.png` and gives CI a real decoder for the
+  // round-trip suite. Optional/additive, like host.images: a reader tool feature-
+  // detects it. Zero network - the wasm is loaded from disk (see node-shell/scan).
+  host.scan = createNodeScanAPI();
+
   // host.net - allowlisted fetch for tools that declared the 'network' capability,
   // built per-invocation from the loaded manifest's network.allowlist (callers thread
   // it in via CliBridgeOpts). Deny happens before any I/O, so an empty/absent allowlist
@@ -581,6 +588,12 @@ export async function createCliBridge(
  * styles don't count - several native-svg tools ship a template script beside their
  * `<svg>`). A container with two drawable children is a LAYOUT, not a wrapper, and the
  * answer is null → the caller raises "needs a browser engine", which is the truth.
+ *
+ * `[data-export-hide]` elements are also not counted: they are explicitly detached
+ * from every export (the web raster path drops them the same way), so a native-<svg>
+ * tool may sit an editor-only sibling next to its `<svg>` - e.g. qr-code's
+ * scannability warnings (plans/162) - without forfeiting its browser-free vector
+ * path. The hidden sibling is never in the exported bytes: only the `<svg>` is.
  */
 const NON_DRAWABLE = new Set(['script', 'style', 'template', 'link', 'meta']);
 function rootSvgOf(node: Element | null): Element | null {
@@ -588,7 +601,7 @@ function rootSvgOf(node: Element | null): Element | null {
   for (let depth = 0; cur && depth < 8; depth++) {
     if (cur.tagName?.toLowerCase() === 'svg') return cur;
     const kids = Array.from(cur.children).filter(
-      (el) => !NON_DRAWABLE.has(el.tagName.toLowerCase()),
+      (el) => !NON_DRAWABLE.has(el.tagName.toLowerCase()) && !el.hasAttribute('data-export-hide'),
     );
     if (kids.length !== 1) return null;
     cur = kids[0] ?? null;
