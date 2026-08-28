@@ -121,6 +121,23 @@ interface CliAssetsAPI extends AssetsAPI {
 /** The concrete host the CLI builds: HostV1 plus the private assets stubs. */
 type CliHost = HostV1 & { assets: CliAssetsAPI };
 
+/** MIME (or, failing that, URL extension) → the AssetRef type vocabulary for
+ *  direct-URL assets. Mirrors the web bridge's urlAssetType - keep in step. */
+function urlAssetKind(mime: string, id: string): { type: 'vector' | 'raster' | 'video' | 'audio'; format: string } | null {
+  const m = (mime || '').toLowerCase().split(';')[0]!.trim();
+  if (m === 'image/svg+xml') return { type: 'vector', format: 'svg' };
+  if (m.startsWith('image/')) return { type: 'raster', format: m.slice(6).replace('jpeg', 'jpg') };
+  if (m.startsWith('video/')) return { type: 'video', format: m.slice(6) };
+  if (m.startsWith('audio/')) return { type: 'audio', format: m.slice(6).replace('mpeg', 'mp3') };
+  const ext = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(id)?.[1]?.toLowerCase();
+  if (!ext) return null;
+  if (ext === 'svg') return { type: 'vector', format: 'svg' };
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif'].includes(ext)) return { type: 'raster', format: ext.replace('jpeg', 'jpg') };
+  if (['mp4', 'webm', 'mov'].includes(ext)) return { type: 'video', format: ext };
+  if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return { type: 'audio', format: ext };
+  return null;
+}
+
 /** Options `host.export.render` reads beyond ExportOpts: the engine-hydrated
  *  data/text payload and the physical-unit qualifier threaded to the emitters. */
 interface CliExportRenderOpts extends ExportOpts {
@@ -410,6 +427,28 @@ export async function createCliBridge(
           source: 'library', id: canonical, type: 'audio', format: 'zzfxm', url: canonical,
           meta: { name: 'Generated music', generated: true, seed: ref.seed, ...(ref.style ? { style: ref.style } : {}) },
         };
+      }
+      // A DIRECT URL as the asset id (same contract as the web bridge, Andy
+      // 2026-08-28): `data:` inline bytes pass through as-is (jsdom reads a
+      // data: img src natively); an http(s) file is fetched and inlined to a
+      // data: URL so the render needs no second network trip. This is the
+      // agent path - `lolly frame --image=https://…/logo.png`. No CSP applies
+      // here; a failed fetch throws and resolveOne drops the asset with its
+      // logged warning, exactly as on the web.
+      if (/^data:/i.test(id)) {
+        const mime = /^data:([^;,]+)/i.exec(id)?.[1] ?? '';
+        const kind = urlAssetKind(mime, id);
+        if (!kind) throw new Error(`Unsupported data: asset type: ${mime || 'unknown'}`);
+        return { source: 'remote', id, type: kind.type, format: kind.format, url: id };
+      }
+      if (/^https?:\/\//i.test(id)) {
+        const res = await fetch(id, { signal: AbortSignal.timeout(20_000) });
+        if (!res.ok) throw new Error(`URL asset fetch failed (${res.status}): ${id}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        const mime = res.headers.get('content-type') ?? '';
+        const kind = urlAssetKind(mime, id);
+        if (!kind) throw new Error(`Unsupported URL asset type (${mime || 'unknown'}): ${id}`);
+        return { source: 'remote', id, type: kind.type, format: kind.format, url: `data:${mime.split(';')[0] || 'application/octet-stream'};base64,${buf.toString('base64')}` };
       }
       // A presentation modifier can ride in the id, baked in at resolve time
       // (same contract as the web bridge). An id carries at most one:

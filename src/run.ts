@@ -1299,7 +1299,12 @@ export function explicitInputValues(
       warn('UNKNOWN_INPUT', `--input.${id} names no input of this tool and had no effect.`);
       continue;
     }
-    const alias = '__lollyinput';
+    // NOT underscore-prefixed: the `_` prefix is the reserved URL-param namespace
+    // (plan 171) and parseUrlState skips such keys before input matching, which
+    // silently broke the old `__lollyinput` sentinel. Collision-free by
+    // construction either way: the synthetic manifest below holds only this one
+    // spec.
+    const alias = 'lollyinput';
     const { values } = parseUrlState(new URLSearchParams([[alias, raw]]).toString(), {
       inputs: [{ ...spec, urlKey: alias }],
     } as Parameters<typeof parseUrlState>[1]);
