@@ -52,6 +52,11 @@ Subcommands:
                         [--metadata]       …and report what else is in the file: embedded
                                            metadata, PDF structure, and text present in
                                            the file but not visible on the page
+                        [--rebuild=<session.lolly>]   the reproducibility receipt: render
+                                           the session again here and report IDENTICAL
+                                           (exit 0) or DIFFERENT (exit 1) with why.
+                                           svg/emf/eps/dxf/csv only - raster and PDF
+                                           bytes depend on the browser engine
                         [--trust-anchor=<root.pem>]   pin a CA root (repeatable)
                         [--no-default-anchors]        …and trust ONLY what you pinned:
                                            drops the Lolly CA root and the vendored
@@ -264,7 +269,18 @@ async function main(): Promise<void> {
   if (cmd === 'validate') {
     const files = positionals.slice(1);
     if (!files.length) {
-      throw usageError('usage: lolly validate <file…> [--json] [--metadata] [--deep] [--require=credential|none] [--trust-anchor=<root.pem>] [--no-default-anchors]', 'MISSING_ARGUMENT');
+      throw usageError('usage: lolly validate <file…> [--json] [--metadata] [--deep] [--rebuild=<session.lolly>] [--require=credential|none] [--trust-anchor=<root.pem>] [--no-default-anchors]', 'MISSING_ARGUMENT');
+    }
+    // `--rebuild=<session.lolly>`: the reproducibility receipt. A different question from
+    // the credential check ("do these bytes still match what was signed") - it asks whether
+    // the SESSION still produces them - so it takes one artifact and answers on its own.
+    if (flags.rebuild) {
+      if (files.length > 1) {
+        throw usageError('--rebuild compares ONE artifact against one .lolly session; name a single file.', 'CONFLICTING_FLAGS');
+      }
+      const { rebuildCli } = await import('../src/rebuild.ts');
+      process.exitCode = await rebuildCli(files[0]!, flags.rebuild, { json: g.json });
+      return;
     }
     const { validateFilesCli } = await import('../src/validate.ts');
     process.exitCode = await validateFilesCli(files, {

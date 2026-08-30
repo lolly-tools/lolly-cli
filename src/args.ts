@@ -57,6 +57,9 @@ export const VALUE_FLAGS = new Set([
   // a usage error on EVERY command, so a tool declaring a boolean input `out` could
   // never be set with the documented bare-flag form.
   'out-dir', 'only', 'type', 'require', 'template', 'password',
+  // `rebuild` takes the path of the `.lolly` session to re-render. A bare form parsing
+  // to "1" would report an unreadable session file literally named "1".
+  'rebuild',
   // The signing identity. Both take a PATH, and a bare form must never parse to the
   // string "1" and then be reported as an unreadable file called "1". There is
   // deliberately no flag that takes the KEY or its passphrase: argv is visible in `ps`

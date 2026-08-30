@@ -69,6 +69,10 @@ interface RunToolCliArgs {
    *  Office / Google Drawings, per-run outline fallback), with `--text=outline`
    *  forcing the old text-as-paths output. wmf/eps/dxf are always outlined. */
   text?: 'outline' | 'live';
+  /** Where the tool's files come from. Defaults to the active profile's `tools/` view;
+   *  `validate --rebuild` overrides it so a `.lolly` that carries its own tool renders
+   *  against THAT copy rather than whatever this checkout happens to hold. */
+  fetchFile?: (path: string) => Promise<string>;
 }
 
 /**
@@ -172,7 +176,7 @@ export function quietVirtualConsole(jsdom: typeof import('jsdom')): InstanceType
   return vc;
 }
 
-export async function runToolCli({ toolId, params, repeated = {}, outputPath, format, share, verify, htmlFallback, text }: RunToolCliArgs): Promise<void> {
+export async function runToolCli({ toolId, params, repeated = {}, outputPath, format, share, verify, htmlFallback, text, fetchFile: fetchFileOverride }: RunToolCliArgs): Promise<void> {
   // Lazy import - jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>', {
@@ -183,7 +187,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   globalThis.document = dom.window.document;
   globalThis.Element = dom.window.Element;
 
-  const fetchFile = readToolFile;
+  const fetchFile = fetchFileOverride ?? readToolFile;
 
   // --lang=xx selects the tool's manifest translation sidecar, if it ships one
   // (engine/src/loader.ts's applyManifestI18n) - the CLI is URL mode under a

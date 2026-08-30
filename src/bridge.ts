@@ -180,10 +180,17 @@ interface CliBridgeOpts {
    * that passes nothing still resolves the same version the web shell would.
    */
   designVersion?: { override?: string | null; pin?: string | null };
+  /**
+   * Refuse `host.capture.page` targets a hosted process must never reach: only
+   * http(s), no credentials, no loopback/link-local/private/multicast literals
+   * (`assertPublicHttpUrl`). The MCP host sets it; a person's own CLI/TUI leaves
+   * it off, since capturing your own localhost is a normal thing to do there.
+   */
+  capturePublicOnly?: boolean;
 }
 
 export async function createCliBridge(
-  { profile = {}, dom, networkAllowlist, designVersion }: CliBridgeOpts = {} as CliBridgeOpts,
+  { profile = {}, dom, networkAllowlist, designVersion, capturePublicOnly = false }: CliBridgeOpts = {} as CliBridgeOpts,
 ): Promise<HostV1> {
   const w = dom.window;
   // Pre-load the asset catalog so query/get can be synchronous-ish.
@@ -873,6 +880,7 @@ function rootSvgOf(node: Element | null): Element | null {
         },
         'png',
         { width: spec.width, height: spec.height ?? spec.width, dpi: (spec.dpr ?? 1) * 96 },
+        { publicOnly: capturePublicOnly },
       );
       const url = `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
       return { source: 'remote', id: `capture:${spec.url}`, type: 'raster', format: 'png', url, width: spec.width, height: spec.height };
