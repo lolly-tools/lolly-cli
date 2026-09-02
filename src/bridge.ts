@@ -12,7 +12,11 @@
 
 import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, emitWmf, gzip, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, makeConnectorsApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef, embedC2pa, C2PA_FORMATS, exportActionSteps, ENGINE_VERSION, collectIngredients, applyPinnedAssets, DESIGN_VERSION_LATEST, pickHeadAssetId, readVersionIndex, resolveDesignVersion, versionAssetId } from '@lolly/engine';
+// The .penpot archive's zip step (plans/178). fflate is already this shell's zip codec
+// (the pptx read path uses it); the engine hands back entries and the caller zips them,
+// exactly the split the web shell's lib/zip.ts sits on.
+import { zipSync } from 'fflate';
+import { buildCmykPaletteMap, parseDimension, toCssLength, toCssPx, toPixels, loadTool, createRuntime, emitEmf, emitEps, emitDxf, emitWmf, gzip, svgToPenpotDoc, imageToPenpotDoc, buildPenpotEntries, imageDimensions, penpotUuid, PENPOT_MIME, parseToolUrl, buildEmbedUrl, parseUrlState, expandQuery, RESERVED, assertComposeStack, parseThemedAssetId, applyIconTheme, parseIconThemesDoc, parseTreatedAssetId, parsePhotoTreatmentsDoc, wrapRasterWithTreatment, createTokenSet, colorToHex, isAlias, makeColorApi, makeGeomApi, makeConnectorsApi, isZzfxmRef, parseZzfxmRef, formatZzfxmRef, embedC2pa, C2PA_FORMATS, exportActionSteps, ENGINE_VERSION, collectIngredients, applyPinnedAssets, DESIGN_VERSION_LATEST, pickHeadAssetId, readVersionIndex, resolveDesignVersion, versionAssetId } from '@lolly/engine';
 import type {
   HostV1, Profile, AssetsAPI, AssetRef, AssetQuery, ExportOpts, ExportMeta,
   StateEntry, ComposeSpec, ComposeUrlOpts, ExportFormat, TokenSet, C2paSignOpts,
@@ -732,6 +736,49 @@ function rootSvgOf(node: Element | null): Element | null {
         // opens metafiles in Google Drawings/Slides under the legacy type.
         return new Blob([bytes as BlobPart], { type: 'application/x-msmetafile' });
       }
+      if (format === 'penpot') {
+        // A Penpot design file (plans/178). Like emf/eps this is pure bytes over the
+        // tool's own <svg> - no rasteriser, no browser - so `--export=penpot` works
+        // headless for every SVG-native tool. The ENGINE owns all of it (the lowering,
+        // the schema, the token filter); this branch only serialises the DOM, reads the
+        // brand off host.tokens and zips what comes back.
+        const svg = rootSvgOf(node);
+        if (!svg) throw new Error('Penpot export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
+        const svgText = w.XMLSerializer ? new w.XMLSerializer().serializeToString(svg) : svg.outerHTML;
+        const name = opts.meta?.tool?.trim() || 'From Lolly';
+        // The brand: the SAME two reads the web shell's penpot-brand.ts makes - the raw
+        // multi-set token document (which is already Penpot's own tokens.json shape) and
+        // the resolved swatches for the file's Assets tab. Typographies are a web-shell
+        // font-role read and are simply absent here; the archive is valid without them.
+        const palette = (await tokenSet()).colors()
+          .filter(c => typeof c.value === 'string' && /^#[0-9a-f]{6,8}$/i.test(c.value))
+          .map(c => ({ name: c.name || c.path, path: c.group ?? undefined, color: c.value }));
+        const shared = { name, tokens: await resolvedDoc(), palette, generatedBy: `lolly/${ENGINE_VERSION}` };
+        const lowered = svgToPenpotDoc(svgText, { ...shared, background: opts.background });
+        // A `data:` <image> is decoded by the engine itself; anything else would need a
+        // fetch, and an unresolved placeholder is simply not added - the writer drops an
+        // image shape whose media is missing and says so in its warnings.
+        let doc = lowered?.doc;
+        if (!doc) {
+          // Nothing Penpot has a construct for: keep the SVG whole as one picture on
+          // one board, so a lowering that declines never costs fidelity.
+          const bytes = new TextEncoder().encode(svgText);
+          const size = imageDimensions(bytes, 'image/svg+xml') ?? { w: 1000, h: 1000 };
+          doc = imageToPenpotDoc(
+            { id: penpotUuid(), name, mtype: 'image/svg+xml', width: size.w, height: size.h, bytes },
+            { ...shared, background: opts.background },
+          );
+        }
+        const build = buildPenpotEntries(doc);
+        for (const note of lowered?.notes ?? []) host.log('warn', `penpot: ${note}`);
+        for (const wmsg of build.warnings) host.log('warn', `penpot: ${wmsg}`);
+        const files: Record<string, Uint8Array> = {};
+        const enc = new TextEncoder();
+        for (const [path, content] of Object.entries(build.entries)) {
+          files[path] = typeof content === 'string' ? enc.encode(content) : content;
+        }
+        return new Blob([zipSync(files) as BlobPart], { type: PENPOT_MIME });
+      }
       if (format === 'eps' || format === 'eps-cmyk') {
         // EPS is vector PostScript built from the same SVG IR as EMF - text is
         // outlined upstream (svgDomToIr shapes live <text> via host.text; an
@@ -1115,6 +1162,9 @@ function mimeFor(format: string): string {
     // it's the only MIME Google Drive opens in Google Drawings/Slides.
     case 'emf': case 'wmf': return 'application/x-msmetafile';
     case 'eps': case 'eps-cmyk': return 'application/postscript';
+    // A .penpot archive IS a zip, but never says so: application/zip is what makes a
+    // shell rename the download to .zip, and Penpot's Import wants the .penpot name.
+    case 'penpot': return PENPOT_MIME;
     // Pro float formats (plans/61-deeprichpixels.md section 6 B3). `image/x-exr` is the de-facto
     // OpenEXR type (never IANA-registered); `image/vnd.radiance` IS registered for RGBE.
     case 'exr': return 'image/x-exr';
