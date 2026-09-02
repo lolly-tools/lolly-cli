@@ -1152,9 +1152,12 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
  * Vector formats that live in NODE_FORMATS (the DOM-free engine tries them first) but
  * that the BROWSER tier can also produce - the web shell's HTML→SVG walker turns an
  * HTML-layout tool into real vector, and its EMF/EPS/DXF emitters ride the same IR.
+ * `penpot` rides it too: the walker lowers an HTML-layout tool into the .penpot
+ * writer's SVG input exactly the way it feeds those emitters, so a tool with no root
+ * `<svg>` escalates to the browser tier instead of dying on the DOM-free refusal.
  * So a DOM-free failure on one of these is a reason to escalate, not to refuse.
  */
-const VECTOR_ESCALATABLE = new Set(['svg', 'emf', 'eps', 'eps-cmyk', 'dxf']);
+const VECTOR_ESCALATABLE = new Set(['svg', 'emf', 'eps', 'eps-cmyk', 'dxf', 'penpot']);
 
 /**
  * Failures that describe THIS RENDER rather than this shell's tiers. They are never

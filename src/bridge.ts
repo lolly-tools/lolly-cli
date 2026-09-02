@@ -754,7 +754,9 @@ function rootSvgOf(node: Element | null): Element | null {
           .filter(c => typeof c.value === 'string' && /^#[0-9a-f]{6,8}$/i.test(c.value))
           .map(c => ({ name: c.name || c.path, path: c.group ?? undefined, color: c.value }));
         const shared = { name, tokens: await resolvedDoc(), palette, generatedBy: `lolly/${ENGINE_VERSION}` };
-        const lowered = svgToPenpotDoc(svgText, { ...shared, background: opts.background });
+        // The engine's notes sink: the reasons a lowering declined survive its null return.
+        const why: string[] = [];
+        const lowered = svgToPenpotDoc(svgText, { ...shared, background: opts.background, notes: why });
         // A `data:` <image> is decoded by the engine itself; anything else would need a
         // fetch, and an unresolved placeholder is simply not added - the writer drops an
         // image shape whose media is missing and says so in its warnings.
@@ -762,6 +764,16 @@ function rootSvgOf(node: Element | null): Element | null {
         if (!doc) {
           // Nothing Penpot has a construct for: keep the SVG whole as one picture on
           // one board, so a lowering that declines never costs fidelity.
+          //
+          // AND SAY SO. The lowering's own `notes` ride the result it declined to
+          // return, so this branch is the only place the flatten can be reported at
+          // all - without this line, `--export=penpot` on a render carrying one
+          // `<filter>` exits 0, prints nothing, and hands back an uneditable picture
+          // to someone who asked for an editable document. The archive is valid and
+          // loses no fidelity, so this is a warning and not a failure.
+          host.log('warn', 'penpot: the render was kept whole as one picture, not lowered to editable shapes - '
+            + (why.length ? why.join('; ') : 'something in it (a filter, mask, clip path, pattern, <use> or inline <style>) has no Penpot construct')
+            + '. The board carries the whole SVG as one image, so nothing is lost, but the shapes are not separable in Penpot.');
           const bytes = new TextEncoder().encode(svgText);
           const size = imageDimensions(bytes, 'image/svg+xml') ?? { w: 1000, h: 1000 };
           doc = imageToPenpotDoc(
