@@ -142,6 +142,9 @@ Export options:
   --password=<pw>          PDF open-password (visible in \`ps\`; see --password-stdin)
   --password-stdin         read the password from stdin instead of argv
   --depth=8|16|float       requested bits per channel; --hdr=1 for the float view transform
+  --fps=<n> --seconds=<s>  video clip controls (mp4/webm/gif/apng): frame rate and length;
+  --wait=<s> --codec=<c>   settle time before frame one, codec h264|hevc|vp9|av1,
+  --vq=smaller|balanced|best   and quality - the export panel's fields, as URL params
   --lang=<xx>              use a tool's manifest translation sidecar
   --designv=<slug|latest>  the design-system version to render against: a published
                            version's slug, or \`latest\` for the edit head. Beats a

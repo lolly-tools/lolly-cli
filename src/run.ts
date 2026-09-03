@@ -265,7 +265,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // different transport, so a packed share link must run identically here
   // (`lolly design --z=1eJ…`). A no-op for ordinary readable params.
   const query = await expandQuery(rawQuery);
-  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam, designVersion: designvParam, slide } = parseUrlState(
+  const { values, format: paramFormat, width, height, unit, dpi, password, c2pa, bleed, imprint, durable, depth, hdr, filename, cuts, profile: pressProfileParam, designVersion: designvParam, slide, video } = parseUrlState(
     query,
     tool.manifest,
   );
@@ -946,6 +946,10 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       // tier supplied the pixels, so an HDR file is the same bytes either way.
       ...(exportOpts.hdr ? { hdr: exportOpts.hdr } : {}),
       ...(depth !== 'auto' ? { depth } : {}),
+      // Video controls (--fps/--seconds/--wait/--codec/--vq), forwarded to the browser
+      // tier as the same URL params the web shell's export panel reads. The CLI is URL
+      // mode under another transport, so a link and a command ask for the same clip.
+      ...(video.fps != null || video.seconds != null || video.wait != null || video.codec || video.quality ? { video } : {}),
     };
     const viaRaster = async (): Promise<Buffer> => {
       const { renderRaster } = await import('./raster.ts');

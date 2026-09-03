@@ -57,6 +57,9 @@ export const VALUE_FLAGS = new Set([
   // a usage error on EVERY command, so a tool declaring a boolean input `out` could
   // never be set with the documented bare-flag form.
   'out-dir', 'only', 'type', 'require', 'template', 'password',
+  // The video export controls (url-mode `fps`/`seconds`/`wait`/`codec`/`vq`): a bare
+  // `--fps` parsing to "1" would ask for a one-frame-per-second clip nobody meant.
+  'fps', 'seconds', 'wait', 'codec', 'vq',
   // `rebuild` takes the path of the `.lolly` session to re-render. A bare form parsing
   // to "1" would report an unreadable session file literally named "1".
   'rebuild',
