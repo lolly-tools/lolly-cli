@@ -186,6 +186,17 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   globalThis.Element = dom.window.Element;
+  // …and a REAL 2D canvas behind them when @napi-rs/canvas is installed (plan 183
+  // WS4). jsdom answers getContext('2d') with "Not implemented", so every tool that
+  // rebuilds pixels rather than describing them - the redact utility's raster
+  // repaint and its own re-decode verification gate - failed here and escalated to
+  // the browser tier. Those hooks predate host.raster and reach for document /
+  // Image / createImageBitmap directly, and a tool ships as DATA from another
+  // repository, so the fix is to make this realm's answer TRUE rather than to
+  // rewrite them. It installs nothing that already works, and returns false
+  // (changing nothing) on a lean install, which keeps the honest refusal.
+  const { installNodeCanvas } = await import('@lolly-tools/node-shell/canvas');
+  installNodeCanvas(dom.window as unknown as { HTMLCanvasElement?: { prototype: Record<string, unknown> } });
 
   const fetchFile = fetchFileOverride ?? readToolFile;
 
@@ -319,6 +330,19 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   const filenameFlag = filename ?? null;
   if (filenameFlag && outputPath) {
     warn('FILENAME_IGNORED', `--output=${outputPath} wins over --filename=${filenameFlag}; the file is written to --output.`);
+  }
+
+  // `--tier-b-debug` (or LOLLY_TIER_B_DEBUG=1): keep the headless browser's console,
+  // page errors and network log, and on a Tier-B failure write them to
+  // `<output>.tier-b-debug.log` with the step that ran out of time. Off by default -
+  // a passing render costs nothing and writes nothing. Set here rather than inside
+  // raster.ts so the log is written beside the file the caller asked for.
+  if (isOn(params['tier-b-debug'])) {
+    const { configureTierBDebug } = await import('@lolly-tools/node-shell/webshell-render');
+    configureTierBDebug({
+      enabled: true,
+      outPath: outputPath ?? (filenameFlag ? resolve(process.cwd(), filenameFlag) : null),
+    });
   }
 
   // File-typed inputs arrive as a filesystem path (--photo=./pic.jpg → an
@@ -916,6 +940,12 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       // filter skips is skipped there too (frameFilterApplies is the shared rule), so this
       // can never mean something different from the run that produced it.
       ...(slide ? { slide } : {}),
+      // The HDR request and the depth request, for the two HDR STILL writers in
+      // raster.ts (16-bit PQ PNG, ISO 21496-1 gain-map JPEG). Deliberately not
+      // forwarded to the browser tier: the encode happens in Node over whichever
+      // tier supplied the pixels, so an HDR file is the same bytes either way.
+      ...(exportOpts.hdr ? { hdr: exportOpts.hdr } : {}),
+      ...(depth !== 'auto' ? { depth } : {}),
     };
     const viaRaster = async (): Promise<Buffer> => {
       const { renderRaster } = await import('./raster.ts');
@@ -924,8 +954,14 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       usedBrowser = res.usedBrowser;
       // Tier B == the web shell; it owns c2pa for that path - UNLESS an identity is
       // configured, in which case it was told `c2pa=off` above and this shell stamps.
-      webShellExport = res.usedBrowser && !identity;
-      if (!res.usedBrowser && wantImprint && res.imprinted === false) imprintFloorSkip = true;
+      // `nodeEncoded` is the third case: the browser supplied only SOURCE PIXELS for an
+      // HDR still and was told `c2pa=off`, so the credential goes on the file THIS
+      // process wrote. Without it an `--hdr=1` export off the browser tier would carry
+      // no Content Credential at all, silently.
+      webShellExport = res.usedBrowser && !identity && !res.nodeEncoded;
+      // Same third case: an HDR still marks its own pixels here, on either tier, so its
+      // floor skip must be reported even when the browser supplied the source frame.
+      if ((!res.usedBrowser || res.nodeEncoded) && wantImprint && res.imprinted === false) imprintFloorSkip = true;
       // Tier A (resvg) rasterises THIS runtime's own SVG, so a swallowed hook failure
       // yields a blank raster - gate it. Tier B re-renders in a real browser whose host
       // has the capability, so hookErrors don't describe those bytes; renderViaWebShell
@@ -948,6 +984,23 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     // format refuses by name rather than accepting flags it will ignore.
     if ((bleed || marksRaw) && !canCarryPrintPrep(targetFormat)) {
       throw unavailableHere(printPrepRefusal(targetFormat), 'PRINT_PREP_UNAVAILABLE');
+    }
+
+    // AN HDR STILL AND A DURABLE CREDENTIAL CANNOT BOTH BE PRODUCED HERE, and the
+    // silent answer would be worse than either. `--hdr=1` now routes png/jpg through
+    // this shell's own HDR writers (raster.ts), which have no neural TrustMark encoder
+    // to call - that model is a browser feature. Letting it through would either drop
+    // the credential the caller asked for or drop the HDR the caller asked for, with
+    // nothing said. Exit 3, not 4: another installation (the web shell, the desktop
+    // app) can do both, so a retry elsewhere is the right advice.
+    if (hdr && wantDurable && ['png', 'jpg', 'jpeg'].includes(targetFormat.toLowerCase())) {
+      throw unavailableHere(
+        `--hdr and --durable cannot be combined for "${targetFormat}" in this shell. The HDR writers here `
+        + '(16-bit Rec.2100-PQ PNG, ISO 21496-1 gain-map JPEG) run browser-free, and the durable Content '
+        + 'Credential needs the neural TrustMark encoder, which is a browser feature. Drop one of the two '
+        + 'flags, or export from the web shell or the desktop app, which can apply both. No file was written.',
+        'HDR_DURABLE_UNAVAILABLE',
+      );
     }
 
     // What the DOM-free attempt said, kept so a failed escalation can report BOTH halves
@@ -1008,8 +1061,15 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       // neither an HTML file nor a "Cannot export" wrapper would be an honest answer - the
       // wrapper would even hand `lolly smoke` the FORMAT_UNAVAILABLE marker and get a
       // broken tool quietly re-rendered as html.
-      if (REAL_RENDER_FAILURES.has((e as Error)?.name)) throw e;
-      if (!htmlFallback || finalFormat === 'html') throw exportFailure(targetFormat, e as Error, domFreeError);
+      // TEAR THE BROWSER TIER DOWN BEFORE LEAVING BY THE ERROR DOOR. The teardown at
+      // the end of this function is on the success path only, so a Tier-B failure left
+      // the pooled Chromium and the localhost dist server open with nothing to close
+      // them: the CLI printed its error and then sat there, because the event loop
+      // still had a listening socket and a browser process on it. `lolly` looked hung
+      // rather than failed, which is a large part of why a Tier-B failure reads as
+      // "the browser tier is broken". Both closes no-op when nothing was started.
+      if (REAL_RENDER_FAILURES.has((e as Error)?.name)) { await teardownTierB(); throw e; }
+      if (!htmlFallback || finalFormat === 'html') { await teardownTierB(); throw exportFailure(targetFormat, e as Error, domFreeError); }
       const blob = await runtime.export(canvas, 'html', {});
       buf = Buffer.from(await blob.arrayBuffer());
       assertRenderOk({ hookErrors: runtime.hookErrors, format: 'html', bytes: buf });
@@ -1140,12 +1200,21 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // Tier B launches a pooled Chromium + a localhost dist server. This CLI run is
   // single-shot, so tear them down (the bin's explicit exit() would kill them anyway;
   // this keeps a programmatic caller from leaking a browser + open port).
-  if (usedBrowser) {
-    const [{ closeBrowser }, { closeWebShell }] = await Promise.all([
-      import('@lolly-tools/node-shell/browsers'), import('@lolly-tools/node-shell/webshell-render'),
-    ]);
-    await Promise.all([closeBrowser(), closeWebShell()]);
-  }
+  if (usedBrowser) await teardownTierB();
+}
+
+/**
+ * Close the pooled Chromium and the localhost dist server, if either was started.
+ *
+ * Both closes are no-ops when Tier B never ran (each module holds its handle in a
+ * module-level promise and clears it), so this is safe to call on any path - which is
+ * the point: it is called from the render failure branch as well as the success tail.
+ */
+async function teardownTierB(): Promise<void> {
+  const [{ closeBrowser }, { closeWebShell }] = await Promise.all([
+    import('@lolly-tools/node-shell/browsers'), import('@lolly-tools/node-shell/webshell-render'),
+  ]);
+  await Promise.all([closeBrowser(), closeWebShell()]);
 }
 
 /**
@@ -1210,6 +1279,10 @@ export const CLI_FLAGS = new Set([
   // The enrolled signing identity (contract section 1.3). Both take a PATH - never key
   // material, which would be visible in `ps` to every user on the machine.
   'sign-key', 'sign-cert',
+  // The browser tier's diagnostic switch: keeps the headless page's console and network
+  // log and writes them beside the output when a Tier-B render fails. Listed here so it
+  // is never reported as "not an input of <tool>".
+  'tier-b-debug',
   // Global flags (contract section 1.2), consumed by the entry point but still present in the
   // params object a programmatic caller passes through.
   'quiet', 'verbose', 'strict', 'json',

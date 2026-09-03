@@ -22,7 +22,7 @@ import { argv } from 'node:process';
 import { readFile } from 'node:fs/promises';
 import { parseToolUrl, normalizeLang } from '@lolly/engine';
 import { runToolCli, listToolsCli, showToolInputsCli, listAssetsCli, readStdin } from '../src/run.ts';
-import { parseArgs, globalFlags, isOn, textMode, resolvePassword, RESERVED_SUBCOMMANDS } from '../src/args.ts';
+import { parseArgs, globalFlags, isOn, textMode, resolvePassword, RESERVED_SUBCOMMANDS, isMlSubcommand } from '../src/args.ts';
 import { EXIT, exitCodeFor, usageError } from '../src/exit-codes.ts';
 import { configureOutput, strictExitCode, note, writeOut, keepConsoleOffStdout } from '../src/output.ts';
 import { beginCommand, emitError, jsonRequested, envelopeEmitted } from '../src/envelope.ts';
@@ -64,11 +64,36 @@ Subcommands:
                                            trusted - the bare-trust check
   lolly install-browser [--with-deps]      one-time Chromium download for the full render
                                            tier (also needs \`npm run build:web\`)
+  lolly models ls                          which on-device model files are here
+  lolly models fetch <family> [--yes]      download one model family (prints the size
+                                           first and asks; --yes answers in advance).
+                                           kokoro, whisper, upscale, matte, ocr,
+                                           ai-detect, reword - depth has no published
+                                           model yet and refuses instead
+  lolly speak "<text>" [--out=clip.wav]    on-device text to speech, WAV out
+                        [--voice=bf_lily] [--speed=1] [--json for word timings]
+  lolly transcribe <clip.wav> [--json]     on-device speech to text, with word timings
+                        [--lang=en]        (WAV only here: Node has no mp3/aac codec)
+  lolly mix <state|plan.json>              a design timeline's soundtrack, mixed with no
+                        [--out=mix.wav]    browser (WAV/ZzFXM sources; --normalize=-16)
+  lolly upscale <image> [--scale=2|4]      on-device AI enlargement, PNG out
+                        [--model=<id>] [--max-edge=N] [--out=big.png] [--models to list]
+  lolly matte <image> [--out=cut.png]      on-device background removal (alpha cutout)
+                        [--model=u2netp|modnet] [--max-edge=N] [--models to list]
+  lolly ocr <image> [--json]               on-device text recognition; the text is stdout
+                        [--single-line] [--min-confidence=0.5] [--models to list]
+  lolly detect-ai "<text>" [--json]        on-device AI-text ESTIMATE, never a verdict
+                        [--in=<file.txt>]  (refuses under 50 words or non-Latin script)
+  lolly reword "<sentence>" [--json]       on-device rewrite, shorter and plainer, gated
+                        [--style=plain] [--samples=3] [--in=<file.txt>]
+  lolly depth <image> [--out=depth.png]    on-device depth map, greyscale, white nearest
+                        [--max-edge=N]     (no model published yet: refuses by name)
 
 Global flags (valid on every command):
   --json                   one JSON envelope on stdout instead of human text, on list,
-                           describe, assets, validate, smoke, batch and preflight. NOT
-                           on a render: there, stdout carries the exported bytes.
+                           describe, assets, validate, smoke, batch, preflight, models,
+                           speak, transcribe, ocr, detect-ai and reword. NOT on a render:
+                           there, stdout carries the exported bytes.
   --quiet                  suppress non-error stderr (progress, notes, warnings)
   --verbose                diagnostics + stack traces (DEBUG=1 is an alias)
   --strict                 promote warnings to failures (exit 2 usage, 4 gate)
@@ -171,7 +196,7 @@ process.stdout.on('error', (err: NodeJS.ErrnoException) => {
 // A raw argv scan is enough: `--json` has one spelling and no bare-value trap. The
 // command name is re-set accurately by main() once the parse succeeds; this pre-set is
 // only the fallback for a failure that happens before that.
-const RAW_VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke']);
+const RAW_VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke', 'models', 'speak', 'transcribe', 'mix', 'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth']);
 const rawFirst = args.find(a => !a.startsWith('-'));
 beginCommand(
   RAW_VERBS.has(rawFirst ?? '') ? rawFirst! : 'lolly',
@@ -237,7 +262,7 @@ async function main(): Promise<void> {
   // before any work, so the top-level catch can name the command in a failure envelope
   // even when the throw happened before the command function was reached. A bare tool
   // id reports as `describe`/`run` - the verb it is sugar for - not as its own name.
-  const VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke']);
+  const VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke', 'models', 'speak', 'transcribe', 'mix', 'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth']);
   beginCommand(VERBS.has(cmd ?? '') ? cmd! : 'run', g.json);
 
   // ── explicit verbs ────────────────────────────────────────────────────────
@@ -315,6 +340,64 @@ async function main(): Promise<void> {
   if (cmd === 'install-browser') {
     const { installBrowserCli } = await import('../src/install-browser.ts');
     process.exitCode = await installBrowserCli(args.slice(args.indexOf('install-browser') + 1));
+    return;
+  }
+
+  // `models`: what on-device model files are staged, and the ONE command that
+  // downloads any. Nothing else in this shell ever fetches a model - a missing one
+  // refuses and names this command with its size (plans/183 section 0.2).
+  if (cmd === 'models') {
+    const { modelsCli } = await import('../src/models.ts');
+    process.exitCode = await modelsCli(args.slice(args.indexOf('models') + 1), { json: g.json, yes: isOn(flags.yes) });
+    return;
+  }
+
+  // The on-device ML utilities (plans/183 WS2): the discovery surface for
+  // host.upscale / host.matte / host.ocr and for the three families that have no
+  // bridge member (ai-detect, reword, depth). Thin wrappers over the same APIs a
+  // tool hook reaches; each refuses by model name, and never downloads anything.
+  if (isMlSubcommand(cmd)) {
+    const rest = positionals.slice(1);
+    const ml = await import('../src/ml-cli.ts');
+    if (cmd === 'upscale') process.exitCode = await ml.upscaleCli(rest, flags);
+    else if (cmd === 'matte') process.exitCode = await ml.matteCli(rest, flags);
+    else if (cmd === 'ocr') process.exitCode = await ml.ocrCli(rest, flags, g.json);
+    else if (cmd === 'detect-ai') process.exitCode = await ml.detectAiCli(rest, flags, g.json, readStdin);
+    else if (cmd === 'reword') process.exitCode = await ml.rewordCli(rest, flags, g.json, readStdin);
+    else process.exitCode = await ml.depthCli(rest, flags);
+    return;
+  }
+
+  // `speak` / `transcribe`: the discovery surface for host.speech, on-device both
+  // ways. Thin wrappers over the same API a tool hook reaches (src/speak.ts).
+  if (cmd === 'speak') {
+    const { speakCli, speakOptions } = await import('../src/speak.ts');
+    // Piped text is accepted (`cat script.txt | lolly speak --out=x.wav`), but only
+    // when stdin is a pipe: reading a terminal here would hang waiting for input
+    // the caller never meant to type.
+    const spoken = positionals.slice(1).join(' ')
+      || (process.stdin.isTTY ? '' : (await readStdin()).toString('utf8'));
+    process.exitCode = await speakCli(spoken, speakOptions(flags));
+    return;
+  }
+
+  if (cmd === 'transcribe') {
+    const { transcribeCli } = await import('../src/speak.ts');
+    process.exitCode = await transcribeCli(positionals[1] ?? '', { json: g.json, ...(flags.lang ? { lang: flags.lang } : {}) });
+    return;
+  }
+
+  // `mix`: a design timeline's soundtrack, mixed without a browser (plan 183 WS3).
+  // The picture of a sequence still needs the paint tier; the sound is a closed form
+  // over decoded PCM, so it comes out here (src/mix.ts).
+  if (cmd === 'mix') {
+    const { mixCli } = await import('../src/mix.ts');
+    const target = Number.parseFloat(flags.normalize ?? '');
+    process.exitCode = await mixCli(positionals[1] ?? '', {
+      out: flags.out ?? flags.output, json: g.json,
+      ...(Number.isFinite(target) ? { normalize: target } : {}),
+      ...(flags['user-profile'] ? { userProfile: flags['user-profile'] } : {}),
+    });
     return;
   }
 

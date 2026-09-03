@@ -98,12 +98,16 @@ const BUG_TYPES = new Set(['TypeError', 'RangeError', 'ReferenceError', 'SyntaxE
  */
 export function exitCodeFor(err: unknown): number {
   if (err === null || typeof err !== 'object') return EXIT.INTERNAL;
-  const e = err as { exit?: unknown; code?: unknown; name?: unknown; needsBrowser?: unknown };
+  const e = err as { exit?: unknown; code?: unknown; name?: unknown; needsBrowser?: unknown; modelMissing?: unknown };
   if (typeof e.exit === 'number') return e.exit;
   const code = typeof e.code === 'string' ? e.code : '';
   const name = typeof e.name === 'string' ? e.name : '';
+  // `modelMissing` carries the family name of an on-device model this machine has
+  // not staged (packages/node-shell/src/speech.ts). Same class as a missing
+  // browser: the request was fine, this installation cannot serve it yet, and the
+  // refusal already names the `lolly models fetch <family>` command that fixes it.
   if (code === 'FORMAT_UNAVAILABLE' || code === 'NEEDS_BROWSER' || code === 'CAPABILITY_UNAVAILABLE'
-      || e.needsBrowser === true || name === 'BrowserError') {
+      || e.needsBrowser === true || typeof e.modelMissing === 'string' || name === 'BrowserError') {
     return EXIT.UNAVAILABLE_HERE;
   }
   if (name === 'RenderIntegrityError') return EXIT.FAILED;

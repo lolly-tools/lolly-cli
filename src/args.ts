@@ -72,7 +72,27 @@ export const VALUE_FLAGS = new Set([
 export const RESERVED_SUBCOMMANDS = [
   'list', 'describe', 'run', 'assets', 'batch', 'smoke', 'validate', 'preflight',
   'install-browser', 'completion', 'help', 'version',
+  // The on-device model surface (plans/183): `models` owns the one command that
+  // downloads a model, `speak` and `transcribe` are host.speech's two directions.
+  'models', 'speak', 'transcribe',
+  // `mix` writes a design timeline's soundtrack with no browser (plans/183 WS3).
+  'mix',
+  // The on-device ML utilities (plans/183 WS2). Three are HostV1 members
+  // (upscale, matte, ocr); the other three have no bridge member and exist only
+  // as these commands. All six are reserved so a brand pack's tool id can never
+  // shadow one.
+  'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth',
 ] as const;
+
+/** The six on-device ML subcommands, named here rather than in src/ml-cli.ts so
+ *  the entry point can dispatch on them without importing that module (and the
+ *  six model runners behind it) on every invocation. */
+export const ML_SUBCOMMANDS = ['upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth'] as const;
+export type MlSubcommand = (typeof ML_SUBCOMMANDS)[number];
+
+export function isMlSubcommand(cmd: string | undefined): cmd is MlSubcommand {
+  return (ML_SUBCOMMANDS as readonly string[]).includes(cmd ?? '');
+}
 
 /** Global flags valid on every command (contract section 1.2). */
 export interface GlobalFlags {

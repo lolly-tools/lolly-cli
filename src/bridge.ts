@@ -63,6 +63,21 @@ import { captureUrl } from '../../../packages/node-shell/src/url-capture.ts';
 // it resolves sharp lazily and returns null when it isn't installed, so importing it is
 // free and a lean install simply leaves host.images undefined.
 import { createNodeImagesAPI } from '../../../packages/node-shell/src/images.ts';
+// The on-device ML utilities (upscale / matte / OCR over onnxruntime-node + sharp).
+// RELATIVE for the same MCP-bundle reason; each factory is a require.resolve probe and
+// the runtimes load on first use, so importing them costs nothing.
+import {
+  createNodeMatteAPI, createNodeOcrAPI, createNodeUpscaleAPI,
+} from '../../../packages/node-shell/src/ml/index.ts';
+// pdf.redact/pdf.pages + host.raster, over @napi-rs/canvas. Same conditional-attach
+// stance as images.ts: the import is free, the native module loads lazily, and both
+// factories return null on a lean install so the capability stays honestly absent.
+import { createNodePdfRedact } from '../../../packages/node-shell/src/pdf-redact.ts';
+import { createNodeRasterAPI } from '../../../packages/node-shell/src/canvas.ts';
+// host.speech (Kokoro TTS + Whisper transcription). RELATIVE for the same MCP-bundle
+// reason; it resolves transformers.js lazily and returns null when the runtime is
+// absent, so importing it costs nothing and a lean install leaves host.speech undefined.
+import { createNodeSpeechAPI } from '../../../packages/node-shell/src/speech.ts';
 import { createNodeScanAPI } from '../../../packages/node-shell/src/scan.ts';
 // LOLLY_STATE_DIR resolution (shared with the TUI). RELATIVE for the MCP-bundle reason.
 import { resolveStateDir } from '../../../packages/node-shell/src/state-dir.ts';
@@ -400,6 +415,15 @@ export async function createCliBridge(
   // aac, opus) rejects by name - see packages/node-shell/src/audio.ts.
   host.audio = createNodeAudioAPI({ repoRoot: REPO_ROOT });
 
+  // host.speech (v1.96 synthesis, v1.99 transcription) - the SAME Kokoro and Whisper
+  // models the web shell runs, over transformers.js on the onnxruntime-node backend
+  // instead of two Workers, so a narration hook renders headlessly and says the same
+  // words at the same times. ATTACHED ONLY IF the runtime resolves, like host.images.
+  // Models are READ, never fetched: one that is not staged refuses by name with the
+  // `lolly models fetch <family>` command (packages/node-shell/src/speech.ts).
+  const speech = createNodeSpeechAPI({});
+  if (speech) host.speech = speech;
+
   // host.images - decode/resize/encode, backed by sharp (native codecs; reads HEIC/AVIF/
   // TIFF, writes the web-safe three). Without it a converter tool like convert-image can
   // only throw, which is what the CLI used to do. ATTACHED ONLY IF sharp resolves: the
@@ -407,6 +431,26 @@ export async function createCliBridge(
   // strictly better than a present-but-throwing stub.
   const images = createNodeImagesAPI();
   if (images) host.images = images;
+
+  // The on-device ML utilities (plans/183 WS2) - host.upscale (v1.101),
+  // host.matte (v1.103) and host.ocr (plans/125), over onnxruntime-node with
+  // sharp for pixels. The MATHS is the web shell's own: the tiling, the letterbox
+  // geometry, the CTC decode and the model rosters live in
+  // packages/node-shell/src/ml/, which shells/web/src/lib/ imports too, so
+  // `models()`/`modelBytes()` answer identically on both and a tool sees one
+  // catalogue. ATTACHED ONLY IF the runtimes resolve, like host.images; models
+  // are READ off disk and never fetched, so a model that is not there refuses by
+  // name with the `lolly models fetch <family>` command.
+  //
+  // The other three families in that directory (ai-detect, reword, depth) have no
+  // HostV1 member today - the web shell reaches them as libs, not bridge methods
+  // - so they are CLI subcommands only and nothing is invented on the bridge.
+  const upscale = createNodeUpscaleAPI();
+  if (upscale) host.upscale = upscale;
+  const matte = createNodeMatteAPI();
+  if (matte) host.matte = matte;
+  const ocr = createNodeOcrAPI();
+  if (ocr) host.ocr = ocr;
 
   // host.scan (v1.153, plans/162 Part 2) - on-device code reader via zxing-wasm.
   // Gives the CLI `lolly scan photo.png` and gives CI a real decoder for the
@@ -947,9 +991,31 @@ function rootSvgOf(node: Element | null): Element | null {
   };
 
   // PDF metadata inspect + strip. Unlike raster/PDF *rendering* (which needs a
-  // browser engine), metadata surgery is pure pdf-lib, which runs fine in node - 
+  // browser engine), metadata surgery is pure pdf-lib, which runs fine in node -
   // so the lean CLI can clean PDFs too.
   host.pdf = createPdfAPI();
+
+  // pdf.redact + pdf.pages (plan 183 WS4) - the two PdfAPI members that REBUILD
+  // PIXELS. They used to be web-only, so `lolly redact` on a PDF escalated a black
+  // rectangle into a 200 MB Chromium. The page render is the app's own interpreter
+  // (the engine's interpretPdfPage → pdfNodesToSvg) rasterised by resvg, and the
+  // bars are burned by @napi-rs/canvas over the SAME shared maths the web half uses
+  // (packages/node-shell/src/pdf-redact-core.ts), so a bar covers identical pixels
+  // on both. ATTACHED ONLY IF the canvas package resolves - the contract makes both
+  // members optional per method precisely so a shell can lack them, and a tool
+  // feature-detects `host.pdf?.redact` rather than assuming.
+  const pdfCanvas = createNodePdfRedact();
+  if (pdfCanvas) {
+    host.pdf.redact = pdfCanvas.redact;
+    host.pdf.pages = pdfCanvas.pages;
+  }
+
+  // host.raster (v1.105) - the realm-portable raster primitives, over the same
+  // canvas. `canRaster()` is the sync probe a tool branches on before deciding what
+  // to render, and it now answers honestly here instead of being absent (which every
+  // hook reads as "headless, refuse"). Conditional for the same reason as above.
+  const raster = createNodeRasterAPI();
+  if (raster) host.raster = raster;
 
   // host.c2pa.sign (v1.85; widened v1.104) - freshly sign a manifest into finished
   // bytes. The engine's embedC2pa is DOM-free, so the lean CLI signs exactly like the
