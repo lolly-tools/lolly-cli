@@ -11,7 +11,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, expandQuery, frameFilterApplies, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip, readXlsx, listXlsxSheets, rowsToCsv } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, serializeHdr, expandQuery, frameFilterApplies, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip, readXlsx, listXlsxSheets, rowsToCsv } from '@lolly/engine';
 import { createHash } from 'node:crypto';
 import type { Lang } from '@lolly/engine';
 import type { InputValue } from '../../../engine/src/inputs.ts';
@@ -19,6 +19,7 @@ import type { InputValue } from '../../../engine/src/inputs.ts';
 // in it - raster, pdf, video - is produced by raster.ts (resvg fast path, else the
 // scoped Chromium).
 import { NODE_FORMATS, DEEP_FORMATS, pxDims, matchedExportFormat, canCarryPrintPrep, printPrepRefusal } from '@lolly-tools/node-shell/raster';
+import { wantsNativeHdrStill } from './raster.ts';
 import { buildExportC2paOpts } from '@lolly-tools/node-shell/c2pa-opts';
 // The enrolled signing identity (key + x5chain) - type only here; the module itself is
 // imported lazily in the render path so a run without --sign-key never loads it.
@@ -946,6 +947,11 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
       // tier supplied the pixels, so an HDR file is the same bytes either way.
       ...(exportOpts.hdr ? { hdr: exportOpts.hdr } : {}),
       ...(depth !== 'auto' ? { depth } : {}),
+      // ...and, for the formats whose HDR encode lives in the BROWSER (avif, tiff, the
+      // 10-bit mp4/webm containers, and a jpg that declined the Node path), the same
+      // request as the `hdr=` URL param the web auto-export reads. Before this an
+      // `--hdr=1 --export=avif` came back SDR and said nothing.
+      ...(hdr && !wantsNativeHdrStill(targetFormat, { hdr: exportOpts.hdr, depth: depth === 'auto' ? undefined : depth, durable: wantDurable }) ? { hdrParam: serializeHdr(hdr) } : {}),
       // Video controls (--fps/--seconds/--wait/--codec/--vq), forwarded to the browser
       // tier as the same URL params the web shell's export panel reads. The CLI is URL
       // mode under another transport, so a link and a command ask for the same clip.
