@@ -26,14 +26,30 @@ import { parseArgs, globalFlags, isOn, textMode, resolvePassword, RESERVED_SUBCO
 import { EXIT, exitCodeFor, usageError } from '../src/exit-codes.ts';
 import { configureOutput, strictExitCode, note, writeOut, keepConsoleOffStdout } from '../src/output.ts';
 import { beginCommand, emitError, jsonRequested, envelopeEmitted } from '../src/envelope.ts';
+import { assertContentRoot, needsContentRoot } from '../src/content-root.ts';
 
 const USAGE = `lolly - constraint-first asset generation from the terminal.
 
 Usage:
-  lolly                                    list tools
+  lolly                                    welcoming start in a TTY; list tools when piped
+  lolly start                              show colour, .lolly/import and explore paths
+  lolly system status                      show the active terminal design system
+  lolly system init --color=#7c3aed        build and activate a system from one colour
+  lolly system import <file>                import .lolly, tokens, Penpot, token zip or SVG
+  lolly system add <file…>                  retain logos, fonts and other source material
+  lolly system export [--output=brand.lolly] export a portable system pack
+  lolly system list | use <id>              list or switch on-device systems
   lolly list                               list tools (explicit spelling)
-  lolly describe <tool-id>                 show a tool's inputs, defaults and formats
+  lolly describe <tool-id> [--all]         show essential inputs; --all shows every input
   lolly run <tool-id> [--flags]            render
+  lolly compile <tool-id> [--inputs=x.json] compile a hydrated document (JSON)
+  lolly schema <tool-id>                    print its typed input JSON Schema
+  lolly inspect|measure <document.json>     inspect without rasterising
+  lolly diff <a.json> <b.json>              semantic document diff
+  lolly optimize <document.json>            run named immutable stages
+  lolly package <document.json> [--output]  write a portable .lolly package
+  lolly validate <document.json> --document validate a compiled document (or a
+                           tool id with --inputs=x.json) through the document API
   lolly <tool-id> [--flags]                sugar for run (or describe, with no flags)
   lolly <https://lolly.tools/#/tool/…>     run a pasted link; later --flags override it
 
@@ -47,6 +63,10 @@ Subcommands:
                         [--strict]         (exit 4 when a check says no; 2 if it could
                                             not run. Report goes to stdout - redirect it)
   lolly smoke [--only=a,b] [--format=svg]  render every catalog tool at defaults (CI gate)
+  lolly icons <icon.svg>… --name --license build a hicolor icon RPM (offline, reproducible)
+                        [--id --symbolic --output]
+  lolly pack --type=font <font.ttf>…       build a font RPM (fc-cache scriptlet, /usr/share/fonts)
+                        --name --license [--foundry --output]
   lolly validate <file…> [--json] [--deep] check Content Credentials (--deep adds the
                                            neural pixel-watermark scan; needs a browser)
                         [--metadata]       …and report what else is in the file: embedded
@@ -88,6 +108,9 @@ Subcommands:
                         [--style=plain] [--samples=3] [--in=<file.txt>]
   lolly depth <image> [--out=depth.png]    on-device depth map, greyscale, white nearest
                         [--max-edge=N]     (no model published yet: refuses by name)
+  lolly completion bash|zsh|fish           print a shell-completion script to stdout
+  lolly tui                                start the interactive terminal shell (needs a
+                                           real terminal; same engine, same bytes)
 
 Global flags (valid on every command):
   --json                   one JSON envelope on stdout instead of human text, on list,
@@ -199,7 +222,7 @@ process.stdout.on('error', (err: NodeJS.ErrnoException) => {
 // A raw argv scan is enough: `--json` has one spelling and no bare-value trap. The
 // command name is re-set accurately by main() once the parse succeeds; this pre-set is
 // only the fallback for a failure that happens before that.
-const RAW_VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke', 'models', 'speak', 'transcribe', 'mix', 'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth']);
+const RAW_VERBS = new Set(['start', 'system', 'list', 'describe', 'run', 'compile', 'schema', 'inspect', 'diff', 'measure', 'optimize', 'package', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke', 'models', 'speak', 'transcribe', 'mix', 'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth', 'icons', 'pack', 'tui']);
 const rawFirst = args.find(a => !a.startsWith('-'));
 beginCommand(
   RAW_VERBS.has(rawFirst ?? '') ? rawFirst! : 'lolly',
@@ -244,8 +267,15 @@ try {
 
 async function main(): Promise<void> {
   if (args.length === 0) {
-    beginCommand('list', false);
-    await listToolsCli();
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      beginCommand('start', false);
+      const { startCli } = await import('../src/system.ts');
+      await startCli();
+    } else {
+      beginCommand('list', false);
+      assertContentRoot();
+      await listToolsCli();
+    }
     return;
   }
 
@@ -265,13 +295,30 @@ async function main(): Promise<void> {
   // before any work, so the top-level catch can name the command in a failure envelope
   // even when the throw happened before the command function was reached. A bare tool
   // id reports as `describe`/`run` - the verb it is sugar for - not as its own name.
-  const VERBS = new Set(['list', 'describe', 'run', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke', 'models', 'speak', 'transcribe', 'mix', 'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth']);
+  const VERBS = new Set(['start', 'system', 'list', 'describe', 'run', 'compile', 'schema', 'inspect', 'diff', 'measure', 'optimize', 'package', 'validate', 'preflight', 'install-browser', 'assets', 'batch', 'smoke', 'models', 'speak', 'transcribe', 'mix', 'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth', 'icons', 'pack', 'completion', 'tui']);
   beginCommand(VERBS.has(cmd ?? '') ? cmd! : 'run', g.json);
+
+  // Content-free binary (plans/131): the published CLI ships no tools and no catalog.
+  // A command that needs them says so here, once, with the routes to a root - instead
+  // of an ENOENT on catalog/tools/index.json from somewhere deep in the render path.
+  if (needsContentRoot(cmd)) assertContentRoot();
 
   // ── explicit verbs ────────────────────────────────────────────────────────
   // `list` / `describe` / `run` exist because the first positional is an open namespace
   // shared with tool ids: a brand pack shipping a tool called `batch` would otherwise be
   // permanently unreachable. The verbs can never be shadowed.
+  if (cmd === 'start') {
+    const { startCli } = await import('../src/system.ts');
+    await startCli(g.json);
+    return;
+  }
+
+  if (cmd === 'system') {
+    const { systemCli } = await import('../src/system.ts');
+    await systemCli(positionals.slice(1), flags, g.json);
+    return;
+  }
+
   if (cmd === 'list') {
     await listToolsCli({ json: g.json });
     return;
@@ -280,7 +327,7 @@ async function main(): Promise<void> {
   if (cmd === 'describe') {
     const toolId = positionals[1];
     if (!toolId) throw usageError('usage: lolly describe <tool-id>', 'MISSING_ARGUMENT');
-    await showToolInputsCli(toolId, { lang: normalizeLang(flags.lang) ?? undefined, json: g.json });
+    await showToolInputsCli(toolId, { lang: normalizeLang(flags.lang) ?? undefined, json: g.json, full: isOn(flags.all) });
     return;
   }
 
@@ -291,6 +338,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (cmd && ['compile', 'schema', 'inspect', 'diff', 'measure', 'optimize', 'package'].includes(cmd)) {
+    const { documentCli } = await import('../src/document.ts');
+    await documentCli(cmd, positionals.slice(1), flags);
+    return;
+  }
+
   // ── validate ──────────────────────────────────────────────────────────────
   // N files, one record each, exit = the worst file's code (contract B9): taking the
   // first non-flag and silently ignoring the rest was wrong-answer shaped.
@@ -298,6 +351,12 @@ async function main(): Promise<void> {
     const files = positionals.slice(1);
     if (!files.length) {
       throw usageError('usage: lolly validate <file…> [--json] [--metadata] [--deep] [--rebuild=<session.lolly>] [--require=credential|none] [--trust-anchor=<root.pem>] [--no-default-anchors]', 'MISSING_ARGUMENT');
+    }
+    if (isOn(flags.document)) {
+      if (files.length !== 1) throw usageError('document validation takes one compiled JSON file or one tool id.', 'CONFLICTING_FLAGS');
+      const { documentCli } = await import('../src/document.ts');
+      await documentCli('validate', files, flags);
+      return;
     }
     // `--rebuild=<session.lolly>`: the reproducibility receipt. A different question from
     // the credential check ("do these bytes still match what was signed") - it asks whether
@@ -440,6 +499,37 @@ async function main(): Promise<void> {
     return;
   }
 
+  // `icons` / `pack`: build a Linux package (RPM) - the packager entry point (plans/197).
+  // Offline + deterministic + rpmlint-clean: an app-icon or font package, ready to call
+  // from a spec's %build or an OBS source service. Honours SOURCE_DATE_EPOCH.
+  if (cmd === 'icons' || cmd === 'pack') {
+    const { iconsCli, packCli } = await import('../src/pack.ts');
+    const rest = positionals.slice(1);
+    process.exitCode = cmd === 'icons' ? await iconsCli(rest, flags) : await packCli(rest, flags);
+    return;
+  }
+
+  // `completion`: a static shell-completion script, printed to stdout so it can be
+  // saved or sourced directly (`lolly completion zsh > ~/.zsh/completions/_lolly`).
+  if (cmd === 'completion') {
+    const shellArg = positionals[1];
+    const { COMPLETION_SHELLS, generateCompletion } = await import('../src/completion.ts');
+    if (!COMPLETION_SHELLS.includes(shellArg as (typeof COMPLETION_SHELLS)[number])) {
+      throw usageError(`usage: lolly completion ${COMPLETION_SHELLS.join('|')}`, 'MISSING_ARGUMENT');
+    }
+    await writeOut(await generateCompletion(shellArg as (typeof COMPLETION_SHELLS)[number]));
+    return;
+  }
+
+  // `tui`: the interactive terminal shell, from the same install (plans/202 WP1.4). It
+  // runs as a child with stdio inherited, so the terminal and the exit code pass
+  // through and this process still writes nothing to stdout.
+  if (cmd === 'tui') {
+    const { tuiCli } = await import('../src/tui.ts');
+    process.exitCode = await tuiCli(args.slice(args.indexOf('tui') + 1));
+    return;
+  }
+
   // ── a pasted lolly.tools link ─────────────────────────────────────────────
   // A fully-configured tool URL: parse it into a toolId + query and run it as if the
   // query were --flags (the URL-mode-as-CLI principle). Any --flag=val after the URL
@@ -458,7 +548,8 @@ async function main(): Promise<void> {
     // export=''. That empty string is NOT a format: coalesce it to undefined so the URL's
     // own `format=` param (kept in the params, read by runToolCli) or the path-segment
     // format wins. An explicit CLI `--export=svg` is non-empty and still overrides.
-    await render(ref.toolId, merged, ref.format ?? undefined, repeated);
+    const toleratedUrlKeys = new Set(Object.keys(urlParams).filter(key => !(key in flags)));
+    await render(ref.toolId, merged, ref.format ?? undefined, repeated, toleratedUrlKeys);
     return;
   }
 
@@ -482,7 +573,13 @@ async function main(): Promise<void> {
 
 /** The one render call site: every path (verb, sugar, URL) funnels through it, so the
  *  flag→argument mapping cannot drift between them. */
-async function render(toolId: string, flags: Record<string, string>, urlFormat?: string, repeated: Record<string, string[]> = {}): Promise<void> {
+async function render(
+  toolId: string,
+  flags: Record<string, string>,
+  urlFormat?: string,
+  repeated: Record<string, string[]> = {},
+  toleratedUnknown: ReadonlySet<string> = new Set(),
+): Promise<void> {
   if (isOn(flags.json)) {
     // `--json` on a render is deliberately absent at GA (contract section 3): run's stdout IS
     // the artefact. Accepting and ignoring the flag is the silent class this shell has
@@ -514,6 +611,8 @@ async function render(toolId: string, flags: Record<string, string>, urlFormat?:
     verify: verify !== undefined,
     htmlFallback: isOn(htmlFallback),
     text: textMode(flags.text),
+    rejectUnknown: true,
+    toleratedUnknown,
   });
 }
 

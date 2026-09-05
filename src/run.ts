@@ -70,6 +70,10 @@ interface RunToolCliArgs {
    *  Office / Google Drawings, per-run outline fallback), with `--text=outline`
    *  forcing the old text-as-paths output. wmf/eps/dxf are always outlined. */
   text?: 'outline' | 'live';
+  /** The installed binary rejects unknown argv flags. Programmatic callers keep
+   * the historical warning default; pasted links may name tolerated URL keys. */
+  rejectUnknown?: boolean;
+  toleratedUnknown?: ReadonlySet<string>;
   /** Where the tool's files come from. Defaults to the active profile's `tools/` view;
    *  `validate --rebuild` overrides it so a `.lolly` that carries its own tool renders
    *  against THAT copy rather than whatever this checkout happens to hold. */
@@ -177,7 +181,7 @@ export function quietVirtualConsole(jsdom: typeof import('jsdom')): InstanceType
   return vc;
 }
 
-export async function runToolCli({ toolId, params, repeated = {}, outputPath, format, share, verify, htmlFallback, text, fetchFile: fetchFileOverride }: RunToolCliArgs): Promise<void> {
+export async function runToolCli({ toolId, params, repeated = {}, outputPath, format, share, verify, htmlFallback, text, rejectUnknown = false, toleratedUnknown, fetchFile: fetchFileOverride }: RunToolCliArgs): Promise<void> {
   // Lazy import - jsdom is heavy and we only need it when actually rendering.
   const jsdom = await import('jsdom');
   const dom = new jsdom.JSDOM('<!DOCTYPE html><html><body><div id="canvas"></div></body></html>', {
@@ -229,7 +233,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // Warn about flags this tool has no use for. The docs promise flags are validated
   // against the manifest; they were simply swallowed, so a typo (`--urll=…`) rendered
   // defaults with no hint that the value went nowhere.
-  warnUnknownFlags(params, tool.manifest);
+  warnUnknownFlags(params, tool.manifest, { reject: rejectUnknown, tolerated: toleratedUnknown });
 
   // `--rate-card=path.json`: load + validate the printer's own card and confirm it in
   // one line. Warn-and-continue on any problem - the card is not required to render, and
@@ -295,7 +299,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
   // intercepted by reserved handling, so the eight shipped tools that declare a
   // `width`/`height`/`format` input stay reachable without renaming inputs whose URLs
   // are a harder contract than this CLI. Applied AFTER parseUrlState so it wins.
-  Object.assign(values, explicitInputValues(params, tool.manifest));
+  Object.assign(values, explicitInputValues(params, tool.manifest, { rejectUnknown, tolerated: toleratedUnknown }));
   // Print prep + press intent for the browser (Tier-B) export tier. `marks` is passed as
   // the raw CSV (?marks) rather than round-tripped through parseUrlState's flag map, and
   // read off the EXPANDED query so a packed link works too. The CMYK press condition uses
@@ -1371,6 +1375,7 @@ function warnShadowedInputs(params: Record<string, string>, manifest: { id: stri
 export function explicitInputValues(
   params: Record<string, string>,
   manifest: { inputs?: Array<{ id: string; urlKey?: string; type?: string }> },
+  opts: { rejectUnknown?: boolean; tolerated?: ReadonlySet<string> } = {},
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const byId = new Map((manifest.inputs ?? []).map(i => [i.id, i] as const));
@@ -1386,6 +1391,9 @@ export function explicitInputValues(
       continue;
     }
     if (!spec) {
+      if (opts.rejectUnknown && !opts.tolerated?.has(key)) {
+        throw usageError(`--input.${id} names no input of this tool. Nothing was rendered.`, 'UNKNOWN_INPUT');
+      }
       warn('UNKNOWN_INPUT', `--input.${id} names no input of this tool and had no effect.`);
       continue;
     }
@@ -1431,9 +1439,19 @@ export function unknownFlags(
   );
 }
 
-function warnUnknownFlags(params: Record<string, string>, manifest: { id: string; inputs?: Array<{ id: string; urlKey?: string }> }): void {
-  const unknown = unknownFlags(params, manifest);
+function warnUnknownFlags(
+  params: Record<string, string>,
+  manifest: { id: string; inputs?: Array<{ id: string; urlKey?: string }> },
+  opts: { reject?: boolean; tolerated?: ReadonlySet<string> } = {},
+): void {
+  const unknown = unknownFlags(params, manifest).filter(k => !opts.tolerated?.has(k));
   if (!unknown.length) return;
+  if (opts.reject) {
+    throw usageError(
+      `${unknown.map(k => `--${k}`).join(', ')} ${unknown.length === 1 ? 'is not an input' : 'are not inputs'} of "${manifest.id}". Nothing was rendered. Run \`lolly describe ${manifest.id}\` to list its inputs.`,
+      'UNKNOWN_FLAG',
+    );
+  }
   warn('UNKNOWN_FLAG',
     `${unknown.map(k => `--${k}`).join(', ')} ${unknown.length === 1 ? 'is not an input' : 'are not inputs'} of "${manifest.id}" ` +
     `and had no effect. Run \`lolly describe ${manifest.id}\` to list its inputs.`);
@@ -1775,7 +1793,7 @@ export async function listAssetsCli(query?: string, opts: { type?: string; json?
   );
 }
 
-export async function showToolInputsCli(toolId: string, opts: { lang?: Lang; json?: boolean } = {}): Promise<void> {
+export async function showToolInputsCli(toolId: string, opts: { lang?: Lang; json?: boolean; full?: boolean } = {}): Promise<void> {
   const tool = await loadToolOrThrow(toolId, readToolFile, opts);
   if (opts.json) {
     await describeToolJson(tool.manifest as DescribableManifest);
@@ -1783,9 +1801,31 @@ export async function showToolInputsCli(toolId: string, opts: { lang?: Lang; jso
   }
   process.stdout.write(`${tool.manifest.name} (${tool.manifest.id} v${tool.manifest.version})\n`);
   process.stdout.write(`Status: ${tool.manifest.status}\n`);
-  process.stdout.write(`Formats: ${tool.manifest.render.formats.join(', ')}\n\n`);
-  process.stdout.write(`Inputs:\n`);
-  for (const i of tool.manifest.inputs) {
+  process.stdout.write(`Formats: ${tool.manifest.render.formats.join(', ')}\n`);
+  const allInputs = tool.manifest.inputs ?? [];
+  const exampleInput = allInputs.find(i => i.required)
+    ?? allInputs.find(i => !i.showIf && ['url', 'text', 'longtext', 'color', 'number'].includes(i.type));
+  const exampleValue = exampleInput
+    ? exampleInput.type === 'url' ? 'https://example.com'
+      : exampleInput.type === 'color' ? '#7c3aed'
+        : exampleInput.type === 'number' ? String(exampleInput.default ?? 1)
+          : exampleInput.type === 'file' || exampleInput.type === 'asset' ? './input-file'
+            : String(exampleInput.default || 'Hello')
+    : '';
+  const exampleFlag = exampleInput
+    ? ` --${RESERVED.has(exampleInput.id) ? `input.${exampleInput.id}` : exampleInput.id}=${/\s/.test(exampleValue) ? JSON.stringify(exampleValue) : exampleValue}`
+    : '';
+  const format = tool.manifest.render.formats.includes('svg') ? 'svg' : tool.manifest.render.formats[0];
+  process.stdout.write(`\nTry it:\n  lolly ${tool.manifest.id}${exampleFlag} --output=${tool.manifest.id}.${format}\n\n`);
+
+  const essentials = allInputs.filter(i => i.required || !i.showIf).slice(0, 8);
+  const shown = opts.full ? allInputs : essentials;
+  // Keep the long-standing `Inputs:` anchor for docs and shell parsers; the
+  // human count/detail follows it instead of replacing it.
+  process.stdout.write(opts.full || shown.length === allInputs.length
+    ? `Inputs: ${allInputs.length}\n`
+    : `Inputs: ${shown.length} essentials of ${allInputs.length}\n`);
+  for (const i of shown) {
     const req = i.required ? ' [required]' : '';
     const def = i.default !== undefined ? ` (default: ${JSON.stringify(i.default)})` : '';
     process.stdout.write(`  --${i.id}=<${i.type}>${req}${def}\n`);
@@ -1793,7 +1833,9 @@ export async function showToolInputsCli(toolId: string, opts: { lang?: Lang; jso
     const hint = syntaxHint(i.id, i.type);
     if (hint) process.stdout.write(`      ↳ ${hint}\n`);
   }
-  process.stdout.write(`\nUsage:\n  lolly ${tool.manifest.id} --some-input=value --output=file.${tool.manifest.render.formats[0]}\n`);
+  if (!opts.full && shown.length < allInputs.length) {
+    process.stdout.write(`\n${allInputs.length - shown.length} more inputs: lolly describe ${tool.manifest.id} --all\n`);
+  }
 }
 
 /** The manifest slice `describe --json` reports (kept structural, like the rest of run.ts). */

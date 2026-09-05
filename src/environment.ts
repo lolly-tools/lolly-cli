@@ -21,6 +21,8 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { browserInstalled, resolveBrowsersDir } from '@lolly-tools/node-shell/browsers';
+import { desktopRendererReport } from '@lolly-tools/node-shell/desktop-renderer';
+import type { RendererStatus } from '@lolly-tools/node-shell/desktop-renderer';
 import { NODE_FORMATS } from '@lolly-tools/node-shell/raster';
 import { repoRoot } from '@lolly-tools/node-shell/repo-root';
 import { CLI_CAPABILITIES } from './bridge.ts';
@@ -42,11 +44,21 @@ export interface EnvironmentReport {
   capabilities: string[];
   /** Formats the DOM-free tier can produce with no browser and no native module. */
   nativeFormats: string[];
+  /**
+   * Which full-fidelity renderer this machine would use for an HTML-layout raster,
+   * a PDF or a video: `desktop-running` (an installed app already listening),
+   * `desktop-installed` (one that would be started for the job), `chromium`, or
+   * `none` when nothing here can produce those formats. `tiers.desktop.order` shows
+   * what `LOLLY_RENDERER` would try, in order.
+   */
+  renderer: RendererStatus;
   tiers: {
     /** jsdom + the engine: svg/emf/eps/dxf, the data formats, html. Always present. */
     domFree: TierReport;
     /** resvg: SVG → PNG without a browser. */
     raster: TierReport;
+    /** The desktop app's own WebView render path, over its loopback endpoint. */
+    desktop: TierReport;
     /** Chromium + the built web shell: HTML-layout raster, jpg/webp, pdf, video. */
     browser: TierReport;
     /** sharp: host.images (decode/resize) for tools that process bitmaps. */
@@ -72,7 +84,8 @@ function resolvable(spec: string): boolean {
 const REPORTED_ENV = [
   'LOLLY_ROOT', 'LOLLY_TRUST_ANCHOR', 'LOLLY_BROWSER_PATH', 'LOLLY_BROWSER_CHANNEL',
   'PLAYWRIGHT_BROWSERS_PATH', 'LOLLY_WEB_BASE', 'LOLLY_WEB_DIST', 'LOLLY_VIDEO_CAPTURE',
-  'LOLLY_STATE_DIR', 'NO_COLOR',
+  'LOLLY_STATE_DIR', 'LOLLY_RENDERER', 'LOLLY_DESKTOP_BIN', 'LOLLY_RENDER_SERVER',
+  'NO_COLOR',
 ];
 
 export async function describeEnvironment(): Promise<EnvironmentReport> {
@@ -96,17 +109,32 @@ export async function describeEnvironment(): Promise<EnvironmentReport> {
   const env: Record<string, string> = {};
   for (const k of REPORTED_ENV) if (process.env[k]) env[k] = process.env[k]!;
 
+  // Checked, not claimed: this reads the desktop app's advert, confirms the process
+  // behind it is alive, and pings the loopback endpoint before it says an app is
+  // running (plans/202 WP2.2).
+  const desktop = await desktopRendererReport(hasBrowser && webBuilt);
+
   return {
     engine,
     cli,
     root,
     capabilities: [...CLI_CAPABILITIES],
     nativeFormats: [...NODE_FORMATS],
+    renderer: desktop.renderer,
     tiers: {
       domFree: { available: true, formats: [...NODE_FORMATS] },
       raster: hasResvg
         ? { available: true, engine: 'resvg', note: 'SVG-native tools only; an HTML-layout tool needs the browser tier' }
         : { available: false, reason: '@resvg/resvg-js is not installed' },
+      desktop: {
+        available: desktop.available,
+        renderer: desktop.renderer,
+        preference: desktop.preference,
+        order: desktop.order,
+        ...(desktop.executable ? { executable: desktop.executable } : {}),
+        ...(desktop.server ? { server: desktop.server } : {}),
+        ...(desktop.reason ? { reason: desktop.reason } : {}),
+      },
       browser: {
         available: hasBrowser && webBuilt,
         ...(browserReason ? { reason: browserReason } : {}),

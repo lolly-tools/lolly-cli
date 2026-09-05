@@ -56,7 +56,7 @@ export const VALUE_FLAGS = new Set([
   // `--out-dir` for a directory of them. Leaving `out` here also made a bare `--out`
   // a usage error on EVERY command, so a tool declaring a boolean input `out` could
   // never be set with the documented bare-flag form.
-  'out-dir', 'only', 'type', 'require', 'template', 'password',
+  'out-dir', 'only', 'type', 'require', 'template', 'password', 'inputs',
   // The video export controls (url-mode `fps`/`seconds`/`wait`/`codec`/`vq`): a bare
   // `--fps` parsing to "1" would ask for a one-frame-per-second clip nobody meant.
   'fps', 'seconds', 'wait', 'codec', 'vq',
@@ -73,7 +73,7 @@ export const VALUE_FLAGS = new Set([
 /** Subcommand words a tool id may never take (contract section 1.1). `completion` is reserved
  *  now so the deferred `lolly completion <shell>` can land additively later. */
 export const RESERVED_SUBCOMMANDS = [
-  'list', 'describe', 'run', 'assets', 'batch', 'smoke', 'validate', 'preflight',
+  'start', 'system', 'list', 'describe', 'run', 'compile', 'schema', 'inspect', 'diff', 'measure', 'optimize', 'package', 'assets', 'batch', 'smoke', 'validate', 'preflight',
   'install-browser', 'completion', 'help', 'version',
   // The on-device model surface (plans/183): `models` owns the one command that
   // downloads a model, `speak` and `transcribe` are host.speech's two directions.
@@ -85,6 +85,12 @@ export const RESERVED_SUBCOMMANDS = [
   // as these commands. All six are reserved so a brand pack's tool id can never
   // shadow one.
   'upscale', 'matte', 'ocr', 'detect-ai', 'reword', 'depth',
+  // Linux packaging (plans/197): `icons` builds a hicolor icon RPM, `pack`
+  // builds a font (etc.) package. Reserved so a brand tool id can't shadow them.
+  'icons', 'pack',
+  // `tui` starts the interactive terminal shell (plans/202 WP1.4). One install, five
+  // doors: nobody should have to learn that the interactive one is a second binary.
+  'tui',
 ] as const;
 
 /** The six on-device ML subcommands, named here rather than in src/ml-cli.ts so

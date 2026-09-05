@@ -10,7 +10,7 @@
  * changes were needed.
  */
 
-import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 // The .penpot archive's zip step (plans/178). fflate is already this shell's zip codec
 // (the pptx read path uses it); the engine hands back entries and the caller zips them,
@@ -25,8 +25,11 @@ import type {
 // design, imported deep-relative like node-shell/raster.ts does for packExr.
 import { encodeExr, encodeRadiance, encodePng16, encodeDither8 } from '../../../engine/src/deep-encode.ts';
 // PDF metadata inspect/strip is pure pdf-lib (no DOM), so the lean node CLI
-// shares the web shell's implementation rather than duplicating it.
-import { createPdfAPI } from '../../web/src/bridge/pdf.ts';
+// shares ONE implementation with the web shell rather than duplicating it. It
+// used to live in shells/web and be imported across the submodule boundary;
+// plans/202 WP1.1 moved it here and left the web file as a re-export. RELATIVE
+// import for the same MCP-bundle reason as repo-root below.
+import { createPdfAPI } from '../../../packages/node-shell/src/pdf.ts';
 // PPTX inspect/rebrand is engine primitives + fflate (plain JS) with the XML
 // parser injected, so the CLI shares one impl with the web shell and supplies
 // jsdom's DOMParser. RELATIVE import on purpose, same reason as repo-root below:
@@ -41,7 +44,17 @@ import { createPptxAPI } from '../../../packages/node-shell/src/pptx.ts';
 import { createNetAPI } from '../../../packages/node-shell/src/net.ts';
 // SVG→EMF IR walk is DOM-light (attribute reads), so it runs under jsdom for
 // native-SVG tools - the same "no layout engine" constraint as the svg branch.
-import { svgDomToIr } from '../../web/src/bridge/svg-ir.ts';
+// Moved out of shells/web by plans/202 WP1.1; RELATIVE for the MCP-bundle reason.
+// The walk shapes <text> itself and takes the font resolver as an argument: the
+// web shell injects its IndexedDB/document.fonts registry, and `cliResolveFont`
+// below is this shell's equivalent over host.text's headless registry. It is NOT
+// optional here - EPS, DXF, WMF and `--text=outline` EMF have no <text> fallback,
+// so with no resolver every run reads as an unresolvable family and the export
+// throws (which is what the byte-pinned goldens in tests/cli-export-golden.test.ts
+// caught).
+import { svgDomToIr } from '../../../packages/node-shell/src/svg-ir.ts';
+import type { SvgIrFont } from '../../../packages/node-shell/src/svg-ir.ts';
+import type { FontStyleSlice } from '../../../packages/node-shell/src/text-svg.ts';
 
 // Repo root holding catalog/ - the shared resolver (LOLLY_ROOT → marker walk → cwd;
 // see packages/node-shell/src/repo-root.ts for why a fixed `../../..` can't work in
@@ -81,11 +94,45 @@ import { createNodeSpeechAPI } from '../../../packages/node-shell/src/speech.ts'
 import { createNodeScanAPI } from '../../../packages/node-shell/src/scan.ts';
 // LOLLY_STATE_DIR resolution (shared with the TUI). RELATIVE for the MCP-bundle reason.
 import { resolveStateDir } from '../../../packages/node-shell/src/state-dir.ts';
+// The saved-session files on this machine, in the layout the desktop app writes
+// (plans/202 WP3.1). Same relative-import reason.
+import {
+  deleteSessionRecord, listSessionSlots, loadSessionData, writeSessionRecord,
+  type SessionData,
+} from '../../../packages/node-shell/src/session-store.ts';
+import { activeNodeDesignSystem, readActiveDesignSystemTokens } from '../../../packages/node-shell/src/design-systems.ts';
 // Text-as-paths on the svg branch (contract section 6a). Local to this shell: it resolves
 // fonts through host.text's headless registry, not the web shell's fetching one.
-import { outlineSvgText } from './svg-outline.ts';
+import { familyStack, numericWeight, outlineSvgText } from './svg-outline.ts';
 import { unavailableHere } from './exit-codes.ts';
 const REPO_ROOT = repoRoot();
+
+/**
+ * The font resolver `svgDomToIr` outlines a run with, over host.text's headless
+ * registry. Cascade order is a browser's: the first named family that resolves to
+ * a real sfnt wins, and a generic keyword is skipped rather than looked up as a
+ * family name - the same rule svg-outline.ts applies on the svg branch, so the two
+ * text paths in this shell pick the same face for the same run.
+ *
+ * Returns null when nothing resolves. The vector formats treat that as fatal and
+ * say which family failed; no substitute face is ever chosen, because outlining a
+ * run in whatever font is on disk would bake a design nobody picked into a file
+ * that then looks authoritative.
+ */
+function cliResolveFont(host: HostV1): (style: FontStyleSlice, text: string) => Promise<SvgIrFont | null> {
+  return async (style) => {
+    const text = host.text;
+    if (!text?.fontUrl) return null;
+    const weight = numericWeight(style.fontWeight ?? null);
+    const italic = /italic|oblique/i.test(style.fontStyle ?? '');
+    for (const family of familyStack(style.fontFamily ?? null)) {
+      if (/^(sans-serif|serif|monospace|cursive|fantasy|system-ui)$/i.test(family)) continue;
+      const font = await text.fontUrl(family, { weight, italic });
+      if (font) return font;
+    }
+    return null;
+  };
+}
 
 /**
  * Capabilities THIS shell can actually fulfil - the CLI's answer to the web shell's
@@ -314,9 +361,21 @@ export async function createCliBridge(
     JSON.parse(await readFile(join(REPO_ROOT, asset.formats[0]!.url.replace(/^\//, '')), 'utf8'));
 
   let tokensDocCache: Promise<unknown> | null = null;
+  let tokensDocRevision = '';
   /** The HEAD document - the edit head, `-latest`. Never a published version. */
-  function tokensDoc(): Promise<unknown> {
+  async function tokensDoc(): Promise<unknown> {
+    const localRecord = await activeNodeDesignSystem().catch(() => null);
+    const revision = localRecord ? `${localRecord.id}:${localRecord.updatedAt}` : 'catalog';
+    if (revision !== tokensDocRevision) {
+      tokensDocRevision = revision;
+      tokensDocCache = null;
+    }
     tokensDocCache ??= (async () => {
+      // CLI and TUI share one editable Node-side head. A terminal system is an
+      // override only when one is active; otherwise the mounted catalog remains
+      // the exact source it was before the start experience existed.
+      const local = localRecord ? await readActiveDesignSystemTokens() : null;
+      if (local) return local;
       if (!headTokensAsset) return null;
       return readAssetDoc(headTokensAsset);
     })().catch(() => null); // unavailable ≠ broken: everything token-y just degrades
@@ -339,9 +398,8 @@ export async function createCliBridge(
    * and says so: an author who typed a slug and silently got a different design
    * system has the one failure this shell refuses to be quiet about.
    */
-  let resolvedDocCache: Promise<unknown> | null = null;
-  function resolvedDoc(): Promise<unknown> {
-    resolvedDocCache ??= (async () => {
+  async function resolvedDoc(): Promise<unknown> {
+    return (async () => {
       const head = await tokensDoc();
       const index = readVersionIndex(head);
       const override = designVersion?.override ?? null;
@@ -368,12 +426,13 @@ export async function createCliBridge(
         return head;
       }
     })().catch(() => tokensDoc());
-    return resolvedDocCache;
   }
 
-  const tokenSets = new Map<string, TokenSet>(); // theme key ('' = default) → resolved set
+  const tokenSets = new Map<string, TokenSet>(); // revision + theme → resolved set
   async function tokenSet(theme?: string): Promise<TokenSet> {
-    const key = theme ?? '';
+    const localRecord = await activeNodeDesignSystem().catch(() => null);
+    const revision = localRecord ? `${localRecord.id}:${localRecord.updatedAt}` : 'catalog';
+    const key = `${revision}\0${theme ?? ''}`;
     let set = tokenSets.get(key);
     if (!set) { set = createTokenSet(await resolvedDoc(), { theme }); tokenSets.set(key, set); }
     return set;
@@ -465,6 +524,19 @@ export async function createCliBridge(
   host.net = createNetAPI({ allowlist: networkAllowlist });
 
   host.assets = {
+    async resolveProvider(ref) {
+      if (ref.provider === 'catalog' || ref.provider === 'library') {
+        try { return await host.assets.get([ref.scope, ref.path].filter(Boolean).join('/')); } catch { return null; }
+      }
+      if (ref.provider === 'image' && ref.scope === 'brand') {
+        const slot = ref.path || 'logo';
+        const matches = await host.assets.query({ tags: [slot] });
+        const picked = matches[0] ?? (slot === 'logo' ? (await host.assets.query({ tags: ['logo'] }))[0] : undefined);
+        if (!picked) return null;
+        try { return await host.assets.get(picked.id); } catch { return null; }
+      }
+      return null;
+    },
     async get(id) {
       // A PROCEDURAL asset: `zzfxm:<seed>[:<style>]` names a song that is
       // synthesised on demand, not a file the catalog stores. It resolves to
@@ -607,43 +679,35 @@ export async function createCliBridge(
     async _deleteUserAsset() { /* no-op: no user images in CLI */ },
   };
 
-  // host.state - in memory by default (a CLI invocation is ephemeral), on DISK when
-  // the machine names a state directory (contract section 1.5/B14). Opt-in on purpose: a
-  // render must not leave files in $HOME nobody asked for (non-goal section 8.7), but a tool
-  // that saves state was previously unscriptable, because every run started empty.
+  // host.state - the saved-session files this machine already has, in the layout the
+  // desktop app writes: <state dir>/saved-state/<token>.json (plans/202 WP3.1). So a
+  // session saved in the desktop app or the TUI loads here by slot.
+  //
+  // READS see that directory always. WRITES still need the environment to name one
+  // (contract section 1.5/B14): a headless render must not drop files into the desktop
+  // app's store, or anywhere else in $HOME, that nobody asked for (non-goal section 8.7).
+  // With no directory named, a save stays in the per-run memory map, exactly as before.
   const stateHome = resolveStateDir();
-  const stateFsDir = stateHome.explicit ? join(stateHome.dir, 'state') : null;
-  const slotFile = (slot: string): string => join(stateFsDir!, encodeURIComponent(slot) + '.json');
+  const stateReadDir = stateHome.dir;
+  const stateWriteDir = stateHome.explicit ? stateHome.dir : null;
   host.state = {
     async save(slot, data) {
-      const entry = { data, updatedAt: new Date().toISOString() };
-      state.set(slot, entry);
-      if (stateFsDir) {
-        await mkdir(stateFsDir, { recursive: true });
-        await writeFile(slotFile(slot), JSON.stringify(entry, null, 2));
-      }
+      state.set(slot, { data, updatedAt: new Date().toISOString() });
+      if (stateWriteDir) await writeSessionRecord(stateWriteDir, { slot, data: data as SessionData });
     },
     async load(slot) {
       const hit = state.get(slot);
       if (hit) return hit.data;
-      if (!stateFsDir) return null;
-      try { return (JSON.parse(await readFile(slotFile(slot), 'utf8')) as { data: object }).data ?? null; }
-      catch { return null; }
+      return await loadSessionData(stateReadDir, slot);
     },
     async list() {
       const slots = new Set(state.keys());
-      if (stateFsDir) {
-        try {
-          for (const f of await readdir(stateFsDir)) {
-            if (f.endsWith('.json')) slots.add(decodeURIComponent(f.slice(0, -5)));
-          }
-        } catch { /* no state dir yet - nothing saved */ }
-      }
+      for (const slot of await listSessionSlots(stateReadDir)) slots.add(slot);
       return Array.from(slots).map(slot => ({ slot })) as StateEntry[];
     },
     async delete(slot) {
       state.delete(slot);
-      if (stateFsDir) { try { await rm(slotFile(slot)); } catch { /* already gone */ } }
+      if (stateWriteDir) await deleteSessionRecord(stateWriteDir, slot);
     },
   };
 
@@ -774,7 +838,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // throws. `--text=outline` forces the old always-text-as-paths output.
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('EMF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
-        const ir = await svgDomToIr(svg, { host, background: opts.background, textMode: opts.text === 'outline' ? 'outline' : 'live' });
+        const ir = await svgDomToIr(svg, { host, resolveFont: cliResolveFont(host), background: opts.background, textMode: opts.text === 'outline' ? 'outline' : 'live' });
         const bytes = emitEmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         // application/x-msmetafile, not RFC 7903 image/emf - Google Drive only
         // opens metafiles in Google Drawings/Slides under the legacy type.
@@ -850,7 +914,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // FINISH_MASK_CMYK here exactly as it does in the browser.
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('EPS export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
-        const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'EPS' });
+        const ir = await svgDomToIr(svg, { host, resolveFont: cliResolveFont(host), background: opts.background, label: 'EPS' });
         const text = emitEps(ir, {
           width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi,
           cmyk: format === 'eps-cmyk',
@@ -865,7 +929,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // what is fundamentally text). Text is outlined upstream (host.text present).
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('DXF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
-        const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'DXF' });
+        const ir = await svgDomToIr(svg, { host, resolveFont: cliResolveFont(host), background: opts.background, label: 'DXF' });
         const { text } = emitDxf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         return new Blob([text], { type: 'image/vnd.dxf' });
       }
@@ -877,7 +941,7 @@ function rootSvgOf(node: Element | null): Element | null {
         // no comment record to carry a source URL.
         const svg = rootSvgOf(node);
         if (!svg) throw new Error('WMF export requires an <svg> in the template (HTML-layout tools need a browser engine - use the desktop app)');
-        const ir = await svgDomToIr(svg, { host, background: opts.background, label: 'WMF' });
+        const ir = await svgDomToIr(svg, { host, resolveFont: cliResolveFont(host), background: opts.background, label: 'WMF' });
         const bytes = emitWmf(ir, { width: opts.width, height: opts.height, unit: opts.unit, dpi: opts.dpi });
         // Same legacy metafile type as EMF above - Drive's Drawings import
         // matches application/x-msmetafile for WMF too.
@@ -956,6 +1020,22 @@ function rootSvgOf(node: Element | null): Element | null {
     // stub keeps the bridge surface complete and fails clearly if a hook calls it.
     async file() {
       throw new Error('CLI delivers transformed files via --output (run.js writes the bytes), not host.export.file');
+    },
+    // Seal files a tool holds into a Linux package (plan 197 M5). Real in the CLI:
+    // it returns the package bytes, which the tool's exportFile hook returns and
+    // run.js writes to --output. The engine owns the format.
+    async pack(spec: import('@lolly-tools/core').ExportPackSpec): Promise<Uint8Array> {
+      const { buildLinuxPack, buildHomeTarball } = await import('@lolly/engine');
+      if (spec.target === 'tar.gz') return buildHomeTarball(spec.files ?? []);
+      return buildLinuxPack({
+        type: spec.type,
+        meta: { ...spec.meta },
+        ...(spec.fonts ? { fonts: spec.fonts } : {}),
+        ...(spec.foundry ? { foundry: spec.foundry } : {}),
+        ...(spec.appstream ? { appstream: spec.appstream } : {}),
+        ...(spec.icons ? { icons: spec.icons } : {}),
+        ...(spec.files ? { files: spec.files } : {}),
+      });
     },
     // The pixel Imprint / durable mark are a raster+canvas enhancement; the lean
     // headless CLI has no rasteriser, so it returns the bytes unchanged (progressive
