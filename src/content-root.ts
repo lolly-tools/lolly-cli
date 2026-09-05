@@ -41,8 +41,12 @@ export function needsContentRoot(cmd: string | undefined): boolean {
   return !CONTENT_FREE_COMMANDS.has(cmd ?? '');
 }
 
-/** The message, built for the environment it is printed in. */
-export function noContentRootMessage(root: string, env: NodeJS.ProcessEnv = process.env): string {
+/**
+ * The message, built for the environment it is printed in. The root is taken for the
+ * call shape (and so a caller reads as one), but the text names LOLLY_ROOT and the
+ * working directory rather than the root that was searched.
+ */
+export function noContentRootMessage(_root: string, env: NodeJS.ProcessEnv = process.env): string {
   const named = env.LOLLY_ROOT?.trim();
   const head = named
     ? `LOLLY_ROOT is set to ${named}, but there is no catalog/tools/index.json under it.`

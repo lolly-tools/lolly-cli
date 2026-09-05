@@ -141,7 +141,7 @@ _lolly() {
     _describe 'tool' tools
   fi
 }
-_lolly "\$@"
+_lolly "$@"
 `;
 }
 
