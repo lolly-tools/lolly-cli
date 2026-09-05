@@ -73,7 +73,7 @@ export const VALUE_FLAGS = new Set([
 /** Subcommand words a tool id may never take (contract section 1.1). `completion` is reserved
  *  now so the deferred `lolly completion <shell>` can land additively later. */
 export const RESERVED_SUBCOMMANDS = [
-  'start', 'system', 'list', 'describe', 'run', 'compile', 'schema', 'inspect', 'diff', 'measure', 'optimize', 'package', 'assets', 'batch', 'smoke', 'validate', 'preflight',
+  'files', 'start', 'system', 'list', 'describe', 'run', 'compile', 'schema', 'inspect', 'diff', 'measure', 'optimize', 'package', 'assets', 'batch', 'smoke', 'validate', 'preflight',
   'install-browser', 'completion', 'help', 'version',
   // The on-device model surface (plans/183): `models` owns the one command that
   // downloads a model, `speak` and `transcribe` are host.speech's two directions.

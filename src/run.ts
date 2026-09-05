@@ -11,7 +11,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, resolve, basename, extname } from 'node:path';
 
-import { loadTool, createRuntime, parseUrlState, serializeUrlState, serializeHdr, expandQuery, frameFilterApplies, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, sfntToWoff, woffToSfnt, storeZip, readXlsx, listXlsxSheets, rowsToCsv } from '@lolly/engine';
+import { loadTool, createRuntime, parseUrlState, serializeUrlState, serializeHdr, expandQuery, frameFilterApplies, embedC2pa, C2PA_FORMATS, c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS, normalizeLang, parseDataRows, parseTableText, hasEncryptedState, unpackEncrypted, ENC_PARAM, RESERVED, parseRateCard, isRateCardError, validateRateCard, sfntKind, storeZip, readXlsx, listXlsxSheets, rowsToCsv } from '@lolly/engine';
 import { createHash } from 'node:crypto';
 import type { Lang } from '@lolly/engine';
 import type { InputValue } from '../../../engine/src/inputs.ts';
@@ -528,7 +528,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     let suggestedName: string | undefined;
     let usedTransformBrowser = false;
     try {
-      const res = await runtime.exportFile();
+      const res = await runtime.exportFile(password ? { password } : {});
       if (Array.isArray(res)) {
         // Batch (a `multiple` file input): the shell streams ONE artifact, so fold
         // every transformed file into a zip (STORED for already-compressed media).
@@ -545,7 +545,7 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
             return { name, bytes: r.bytes instanceof Uint8Array ? r.bytes : new Uint8Array(r.bytes as ArrayBuffer) };
           });
           bytes = storeZip(entries);
-          suggestedName = 'embed-imprint-track.zip';
+          suggestedName = `${tool.manifest.id}-files.zip`;
         }
       } else {
         bytes = res.bytes as Uint8Array;
@@ -589,11 +589,10 @@ export async function runToolCli({ toolId, params, repeated = {}, outputPath, fo
     if (dest) {
       const de = extname(dest).slice(1).toLowerCase();
       if (de === 'ttf' || de === 'otf' || de === 'woff') {
-        const k = sfntKind(bytes);
-        let conv: Uint8Array | null = null;
-        if (de === 'woff' && (k === 'ttf' || k === 'otf')) conv = sfntToWoff(bytes);
-        else if ((de === 'ttf' || de === 'otf') && k === 'woff') conv = woffToSfnt(bytes);
-        if (conv) { bytes = conv; buf = Buffer.from(bytes); }
+        if (sfntKind(bytes)) {
+          const { convertFontContainer } = await import('@lolly/engine');
+          bytes = convertFontContainer(bytes, de); buf = Buffer.from(bytes);
+        }
       }
     }
     if (dest) {
